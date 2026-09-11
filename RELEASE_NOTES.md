@@ -6,7 +6,7 @@ simple Windows app.
 ## What's Included
 
 - Download videos as MP4, MKV, MP3, or the original format.
-- Cut local video files with human-friendly time controls.
+- Cut videos by choosing start and end times.
 - Convert local files with quality presets.
 - Drag and drop local video files into Cut and Convert.
 - Separate output folders for downloads, cuts, and converts.
