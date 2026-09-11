@@ -2,9 +2,9 @@
 
 Simple Video Download Cut and Convert
 
-Svid is a simple Windows app for downloading videos, cutting clips, and
-converting local media. It has a native desktop window, drag and drop support,
-separate output folders, and a normal Windows installer/uninstaller.
+Svid helps you download videos, cut clips, and convert media files from one
+simple Windows app. It supports drag and drop, keeps downloads/cuts/converts in
+separate folders, and includes a normal installer/uninstaller.
 
 It is powered by `yt-dlp`, `ffmpeg`, Deno, and Microsoft WebView2. The user does
 not need to install these tools manually; Svid downloads or bundles what it
@@ -12,7 +12,7 @@ needs.
 
 ## Features
 
-- Download videos as MP4, MKV, MP3, or source/native format.
+- Download videos as MP4, MKV, MP3, or the original format.
 - Cut local videos by choosing start and end times.
 - Convert local videos/audio with quality presets.
 - Drag and drop files into Cut and Convert.
@@ -49,10 +49,9 @@ ffprobe.exe
 deno.exe
 ```
 
-Double-clicking the EXE opens the native Windows UI. The main EXE contains its
-hidden backend and extracts it beside itself when needed. Files can be dropped
-inside the UI with real Windows paths, or dragged directly onto
-`Svid.exe`.
+Double-clicking the EXE opens the app. The main EXE contains its helper process
+and extracts it beside itself when needed. Files can be dropped inside the app,
+or dragged directly onto `Svid.exe`.
 
 Default folders:
 

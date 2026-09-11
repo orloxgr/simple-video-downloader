@@ -1,13 +1,11 @@
 # Svid v2.0.1
 
-Svid is a simple Windows app for downloading videos, cutting clips, and
-converting local media without asking users to install command-line tools by
-hand.
+Svid helps you download videos, cut clips, and convert media files from one
+simple Windows app.
 
-## Highlights
+## What's Included
 
-- Native Windows desktop UI, not a browser tab.
-- Download videos as MP4, MKV, MP3, or source/native format.
+- Download videos as MP4, MKV, MP3, or the original format.
 - Cut local video files with human-friendly time controls.
 - Convert local files with quality presets.
 - Drag and drop local video files into Cut and Convert.
