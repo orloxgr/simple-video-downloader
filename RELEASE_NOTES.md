@@ -1,4 +1,4 @@
-# Svid v2.0.1
+# Svid v2.1.0
 
 Svid helps you download videos, cut clips, and convert media files from one
 simple Windows app.
@@ -10,7 +10,8 @@ simple Windows app.
 - Convert local files with quality presets.
 - Drag and drop local video files into Cut and Convert.
 - Separate output folders for downloads, cuts, and converts.
-- Settings for tool update check frequency per dependency.
+- Check for Svid updates from Settings and run the installer.
+- Settings for update check frequency per item.
 - Installer with selectable install path, Start Menu/Desktop shortcuts, and
   proper Windows uninstall.
 - Window title now includes the full tagline:

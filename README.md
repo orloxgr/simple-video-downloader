@@ -18,7 +18,9 @@ need to install these tools manually; Svid downloads or bundles what it needs.
 - Separate folders for downloads, cuts, and converts.
 - Open output folders from inside the app.
 - Hide/show logs when needed.
-- Configure update check frequency separately for `yt-dlp`, `ffmpeg`, and Deno.
+- Check for Svid updates from Settings and run the installer.
+- Configure update check frequency separately for Svid, `yt-dlp`, `ffmpeg`,
+  and Deno.
 
 ## Download
 
@@ -110,5 +112,5 @@ already in `dist` are kept.
 After building, create a GitHub release with:
 
 ```powershell
-gh release create v2.0.1 dist\Svid-Setup.exe dist\Svid.exe --title "Svid v2.0.1" --notes-file RELEASE_NOTES.md
+gh release create v2.1.0 dist\Svid-Setup.exe dist\Svid.exe --title "Svid v2.1.0" --notes-file RELEASE_NOTES.md
 ```

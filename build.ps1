@@ -90,5 +90,5 @@ Copy-Item -Force $PublishedSetupExe $SetupExe
 Write-Host ""
 Write-Host "Built: $AppExe"
 Write-Host "Built: $SetupExe"
-Write-Host "Portable: give users Svid.exe."
-Write-Host "Installer: give users Svid-Setup.exe for Start Menu/Desktop shortcuts and proper uninstall."
+Write-Host "Portable app: $AppExe"
+Write-Host "Installer: $SetupExe"

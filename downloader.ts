@@ -1,8 +1,11 @@
 import { basename, dirname, join, parse, resolve } from "node:path";
 
-const APP_VERSION = "2.0.1";
+const APP_VERSION = "2.1.0";
 const APP_NAME = "Svid";
 const APP_TAGLINE = "Simple Video Download Cut and Convert";
+const APP_REPO = "orloxgr/simple-video-downloader";
+const APP_LATEST_RELEASE_API =
+  `https://api.github.com/repos/${APP_REPO}/releases/latest`;
 
 const appDir = dirname(Deno.execPath());
 const isWindows = Deno.build.os === "windows";
@@ -14,6 +17,7 @@ const exe = (name: string) => join(appDir, isWindows ? `${name}.exe` : name);
 const settingsFile = join(appDir, "settings.json");
 
 type ToolName = "yt-dlp" | "ffmpeg" | "deno";
+type UpdateTarget = ToolName | "svid";
 type UpdateInterval = "3d" | "7d" | "30d" | "90d" | "365d" | "never";
 type LocalAction = "audio" | "mp4" | "mkv" | "cut";
 type WebAction = "mp4" | "mkv" | "mp3" | "native";
@@ -32,8 +36,8 @@ type ProcessOptions = {
 };
 
 type AppSettings = {
-  updateIntervals: Record<ToolName, UpdateInterval>;
-  lastUpdateChecks: Partial<Record<ToolName, number>>;
+  updateIntervals: Record<UpdateTarget, UpdateInterval>;
+  lastUpdateChecks: Partial<Record<UpdateTarget, number>>;
   outputDirs: {
     downloads: string;
     cuts: string;
@@ -51,6 +55,7 @@ const intervalDays: Record<Exclude<UpdateInterval, "never">, number> = {
 
 const defaultSettings: AppSettings = {
   updateIntervals: {
+    svid: "7d",
     "yt-dlp": "7d",
     ffmpeg: "7d",
     deno: "7d",
@@ -97,10 +102,10 @@ function normalizeSettings(raw: unknown): AppSettings {
     ? raw as Partial<AppSettings>
     : {};
   const updateIntervals = { ...defaultSettings.updateIntervals };
-  const lastUpdateChecks: Partial<Record<ToolName, number>> = {};
+  const lastUpdateChecks: Partial<Record<UpdateTarget, number>> = {};
   const outputDirs = { ...defaultSettings.outputDirs };
 
-  for (const tool of ["yt-dlp", "ffmpeg", "deno"] as const) {
+  for (const tool of ["svid", "yt-dlp", "ffmpeg", "deno"] as const) {
     const interval = source.updateIntervals?.[tool];
     if (isUpdateInterval(interval)) updateIntervals[tool] = interval;
 
@@ -492,6 +497,144 @@ async function downloadFile(url: string, destination: string) {
       // The stream normally closes the file already.
     }
   }
+}
+
+type SvidRelease = {
+  version: string;
+  tagName: string;
+  setupUrl: string;
+  releaseUrl: string;
+};
+
+function parseVersion(value: string): number[] {
+  const clean = value.trim().replace(/^v/i, "");
+  return clean.split(".").map((part) => {
+    const value = Number(part.replace(/[^\d].*$/, ""));
+    return Number.isFinite(value) ? value : 0;
+  });
+}
+
+function compareVersions(left: string, right: string): number {
+  const a = parseVersion(left);
+  const b = parseVersion(right);
+  const length = Math.max(a.length, b.length, 3);
+  for (let index = 0; index < length; index++) {
+    const diff = (a[index] ?? 0) - (b[index] ?? 0);
+    if (diff !== 0) return diff > 0 ? 1 : -1;
+  }
+  return 0;
+}
+
+async function latestSvidRelease(): Promise<SvidRelease> {
+  const response = await fetch(APP_LATEST_RELEASE_API, {
+    headers: {
+      accept: "application/vnd.github+json",
+      "user-agent": `${APP_NAME}/${APP_VERSION}`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(
+      `GitHub release check failed: ${response.status} ${response.statusText}`,
+    );
+  }
+
+  const payload = await response.json();
+  const assets = Array.isArray(payload.assets) ? payload.assets : [];
+  const setup = assets.find((asset: unknown) => {
+    if (!asset || typeof asset !== "object") return false;
+    const name = "name" in asset ? String(asset.name) : "";
+    return name.toLowerCase() === "svid-setup.exe";
+  }) as { browser_download_url?: string } | undefined;
+
+  if (!setup?.browser_download_url) {
+    throw new Error("Latest GitHub release does not include Svid-Setup.exe.");
+  }
+
+  const tagName = String(payload.tag_name ?? "");
+  return {
+    version: tagName.replace(/^v/i, ""),
+    tagName,
+    setupUrl: setup.browser_download_url,
+    releaseUrl: String(payload.html_url ?? ""),
+  };
+}
+
+async function checkSvidUpdate(
+  scheduled = false,
+): Promise<Record<string, unknown>> {
+  const todayDays = Math.floor(Date.now() / 86_400_000);
+  const settings = await loadSettings();
+  const interval = settings.updateIntervals.svid;
+
+  if (scheduled && interval === "never") {
+    return {
+      checked: false,
+      reason: "disabled",
+      currentVersion: APP_VERSION,
+    };
+  }
+
+  if (scheduled && interval !== "never") {
+    const days = intervalDays[interval];
+    const lastDays = settings.lastUpdateChecks.svid;
+    const diff = typeof lastDays === "number"
+      ? todayDays - lastDays
+      : Number.POSITIVE_INFINITY;
+
+    if (diff < days && diff >= 0) {
+      return {
+        checked: false,
+        reason: "not-due",
+        currentVersion: APP_VERSION,
+        daysSinceLastCheck: diff,
+      };
+    }
+  }
+
+  const release = await latestSvidRelease();
+  settings.lastUpdateChecks.svid = todayDays;
+  await saveSettings(settings);
+
+  return {
+    checked: true,
+    currentVersion: APP_VERSION,
+    latestVersion: release.version,
+    tagName: release.tagName,
+    releaseUrl: release.releaseUrl,
+    updateAvailable: compareVersions(release.version, APP_VERSION) > 0,
+  };
+}
+
+async function installLatestSvidUpdate(): Promise<Record<string, unknown>> {
+  const release = await latestSvidRelease();
+  if (compareVersions(release.version, APP_VERSION) <= 0) {
+    return {
+      started: false,
+      updateAvailable: false,
+      currentVersion: APP_VERSION,
+      latestVersion: release.version,
+    };
+  }
+
+  const tempDir = await Deno.makeTempDir({ prefix: "svid-update-" });
+  const setupPath = join(tempDir, "Svid-Setup.exe");
+  await downloadFile(release.setupUrl, setupPath);
+
+  new Deno.Command(setupPath, {
+    cwd: tempDir,
+    stdin: "null",
+    stdout: "null",
+    stderr: "null",
+  }).spawn();
+
+  return {
+    started: true,
+    updateAvailable: true,
+    currentVersion: APP_VERSION,
+    latestVersion: release.version,
+    setupPath,
+  };
 }
 
 async function removePath(path: string) {
@@ -2378,6 +2521,20 @@ function webUi(initialTargets: string[]): string {
 
     <section id="settings" class="tab-panel">
       <h2>Settings</h2>
+      <label>Svid update check
+        <select id="updateSvid">
+          <option value="3d">Every 3 days</option>
+          <option value="7d">Every week</option>
+          <option value="30d">Every month</option>
+          <option value="90d">Every 3 months</option>
+          <option value="365d">Every year</option>
+          <option value="never">Never</option>
+        </select>
+      </label>
+      <div class="command-row">
+        <button id="checkSvidUpdateBtn" class="secondary-btn">Check for Svid update</button>
+      </div>
+      <div id="svidUpdateStatus" class="status"></div>
       <div class="row">
         <label>yt-dlp update check
           <select id="updateYtdlp">
@@ -2590,6 +2747,7 @@ function webUi(initialTargets: string[]): string {
     async function loadSettings() {
       const response = await fetch("/api/settings");
       const settings = await response.json();
+      document.querySelector("#updateSvid").value = settings.updateIntervals.svid;
       document.querySelector("#updateYtdlp").value = settings.updateIntervals["yt-dlp"];
       document.querySelector("#updateFfmpeg").value = settings.updateIntervals.ffmpeg;
       document.querySelector("#updateDeno").value = settings.updateIntervals.deno;
@@ -2602,6 +2760,7 @@ function webUi(initialTargets: string[]): string {
       const status = document.querySelector("#settingsStatus");
       await postJson("/api/settings", {
         updateIntervals: {
+          svid: document.querySelector("#updateSvid").value,
           "yt-dlp": document.querySelector("#updateYtdlp").value,
           ffmpeg: document.querySelector("#updateFfmpeg").value,
           deno: document.querySelector("#updateDeno").value
@@ -2614,6 +2773,38 @@ function webUi(initialTargets: string[]): string {
       });
       status.textContent = "Saved.";
       setTimeout(() => { status.textContent = ""; }, 1600);
+    });
+
+    async function checkSvidUpdate(scheduled = false) {
+      const status = document.querySelector("#svidUpdateStatus");
+      if (!scheduled) status.textContent = "Checking Svid update...";
+      try {
+        const result = await postJson("/api/svid-update/check", { scheduled });
+        if (!result.checked) return;
+        if (!result.updateAvailable) {
+          status.textContent = "Svid is up to date.";
+          return;
+        }
+
+        status.textContent = "Svid " + result.latestVersion + " is available.";
+        if (scheduled) return;
+
+        if (!confirm("Svid " + result.latestVersion + " is available. Download and run the installer now?")) {
+          return;
+        }
+
+        status.textContent = "Downloading Svid installer...";
+        const install = await postJson("/api/svid-update/install", {});
+        status.textContent = install.started
+          ? "Installer started. Follow the setup window."
+          : "Svid is up to date.";
+      } catch (error) {
+        if (!scheduled) status.textContent = error.message || String(error);
+      }
+    }
+
+    document.querySelector("#checkSvidUpdateBtn").addEventListener("click", async () => {
+      await checkSvidUpdate(false);
     });
 
     document.querySelectorAll("[data-open-folder]").forEach(button => {
@@ -2914,7 +3105,7 @@ function webUi(initialTargets: string[]): string {
     }
 
     renderPending();
-    loadSettings();
+    loadSettings().then(() => checkSvidUpdate(true)).catch(() => {});
     heartbeat();
     refreshJobs();
     setInterval(heartbeat, 1500);
@@ -2954,7 +3145,7 @@ async function handleUiRequest(
     const body = await request.json();
     const settings = await loadSettings();
 
-    for (const tool of ["yt-dlp", "ffmpeg", "deno"] as const) {
+    for (const tool of ["svid", "yt-dlp", "ffmpeg", "deno"] as const) {
       const interval = body.updateIntervals?.[tool];
       if (isUpdateInterval(interval)) {
         settings.updateIntervals[tool] = interval;
@@ -2970,6 +3161,29 @@ async function handleUiRequest(
 
     await saveSettings(settings);
     return json(settings);
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/svid-update/check") {
+    const body = await request.json().catch(() => ({}));
+    try {
+      return json(await checkSvidUpdate(Boolean(body.scheduled)));
+    } catch (error) {
+      return json({
+        error: error instanceof Error ? error.message : String(error),
+      }, 500);
+    }
+  }
+
+  if (
+    request.method === "POST" && url.pathname === "/api/svid-update/install"
+  ) {
+    try {
+      return json(await installLatestSvidUpdate());
+    } catch (error) {
+      return json({
+        error: error instanceof Error ? error.message : String(error),
+      }, 500);
+    }
   }
 
   if (request.method === "POST" && url.pathname === "/api/open-folder") {

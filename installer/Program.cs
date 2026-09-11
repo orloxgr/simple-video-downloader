@@ -9,7 +9,7 @@ namespace Svid.Setup;
 internal static class Program
 {
     private const string AppName = "Svid";
-    private const string AppVersion = "2.0.1";
+    private const string AppVersion = "2.1.0";
     private const string AppTagline = "Simple Video Download Cut and Convert";
     private const string Publisher = "Byron Iniotakis";
     private const string InstalledAppExeName = "Svid.exe";
@@ -55,7 +55,7 @@ internal static class Program
 
     private static void Install(bool quiet)
     {
-        var installDir = GetDefaultInstallDir();
+        var installDir = GetInstalledDir();
         if (!quiet)
         {
             var selectedInstallDir = PromptForInstallDir(installDir);
