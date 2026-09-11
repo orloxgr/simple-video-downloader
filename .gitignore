@@ -1,0 +1,36 @@
+# Build output
+/build/
+/dist/
+/native-ui/bin/
+/native-ui/obj/
+/installer/bin/
+/installer/obj/
+
+# Downloaded runtime/tools
+/deno.exe
+/deno.old.exe
+/yt-dlp.exe
+/ffmpeg.exe
+/ffplay.exe
+/ffprobe.exe
+/python.exe
+
+# Local app state and generated media
+/settings.json
+/.update_stamp
+/downloads/
+/cuts/
+/converts/
+/uploads/
+/list.txt
+
+# Legacy local launcher
+/DOWNLOADER.bat
+
+# Editor/OS noise
+.vs/
+.vscode/
+*.user
+*.suo
+Thumbs.db
+Desktop.ini
