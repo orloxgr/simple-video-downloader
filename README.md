@@ -6,9 +6,8 @@ Svid helps you download videos, cut clips, and convert media files from one
 simple Windows app. It supports drag and drop, keeps downloads/cuts/converts in
 separate folders, and includes a normal installer/uninstaller.
 
-It is powered by `yt-dlp`, `ffmpeg`, Deno, and Microsoft WebView2. The user does
-not need to install these tools manually; Svid downloads or bundles what it
-needs.
+It is powered by `yt-dlp`, `ffmpeg`, Deno, and Microsoft WebView2. You do not
+need to install these tools manually; Svid downloads or bundles what it needs.
 
 ## Features
 
@@ -23,7 +22,7 @@ needs.
 
 ## Download
 
-For normal installs, give the user:
+Download the installer:
 
 ```text
 dist\Svid-Setup.exe
@@ -31,9 +30,9 @@ dist\Svid-Setup.exe
 
 The installer adds Start Menu/Desktop shortcuts and a normal Windows uninstall
 entry. Uninstall removes the app files, shortcuts, and registry entry, but keeps
-the user's video files.
+your video files.
 
-For portable use, give the user:
+Portable version:
 
 ```text
 dist\Svid.exe
@@ -74,7 +73,7 @@ The installer creates:
 - Desktop shortcut
 - Windows uninstall entry
 
-Uninstall keeps the user's downloaded, cut, and converted files.
+Uninstall keeps your downloaded, cut, and converted files.
 
 ## License
 
