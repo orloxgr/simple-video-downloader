@@ -1,6 +1,6 @@
 import { basename, dirname, join, parse, resolve } from "node:path";
 
-const APP_VERSION = "2.0.0";
+const APP_VERSION = "2.0.1";
 const APP_NAME = "Svid";
 const APP_TAGLINE = "Simple Video Download Cut and Convert";
 
@@ -8,8 +8,8 @@ const appDir = dirname(Deno.execPath());
 const isWindows = Deno.build.os === "windows";
 const userHome = Deno.env.get("USERPROFILE") ?? Deno.env.get("HOME") ?? appDir;
 const userDownloadsDir = join(userHome, "Downloads");
-const userDocumentsDir = join(userHome, "Documents");
-const svidDocumentsDir = join(userDocumentsDir, "Svid");
+const userVideosDir = join(userHome, "Videos");
+const svidVideosDir = join(userVideosDir, "Svid");
 const exe = (name: string) => join(appDir, isWindows ? `${name}.exe` : name);
 const settingsFile = join(appDir, "settings.json");
 
@@ -58,8 +58,8 @@ const defaultSettings: AppSettings = {
   lastUpdateChecks: {},
   outputDirs: {
     downloads: userDownloadsDir,
-    cuts: join(svidDocumentsDir, "cuts"),
-    converts: join(svidDocumentsDir, "converts"),
+    cuts: join(svidVideosDir, "cuts"),
+    converts: join(svidVideosDir, "converts"),
   },
 };
 

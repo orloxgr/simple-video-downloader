@@ -1,4 +1,4 @@
-# Svid v2.0.0
+# Svid v2.0.1
 
 Svid is a simple Windows app for downloading videos, cutting clips, and
 converting local media without asking users to install command-line tools by
@@ -16,12 +16,15 @@ hand.
 - Built-in support/donation links and open-source thanks.
 - Installer with selectable install path, Start Menu/Desktop shortcuts, and
   proper Windows uninstall.
+- Window title now includes the full tagline:
+  `Simple Video Download Cut and Convert`.
+- Default cut/convert folders now live under Videos instead of Documents.
 
 ## Default Folders
 
 - Downloads: `%USERPROFILE%\Downloads`
-- Cuts: `%USERPROFILE%\Documents\Svid\cuts`
-- Converts: `%USERPROFILE%\Documents\Svid\converts`
+- Cuts: `%USERPROFILE%\Videos\Svid\cuts`
+- Converts: `%USERPROFILE%\Videos\Svid\converts`
 
 ## Files
 

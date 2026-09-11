@@ -9,7 +9,8 @@ namespace Svid.Setup;
 internal static class Program
 {
     private const string AppName = "Svid";
-    private const string AppVersion = "2.0.0";
+    private const string AppVersion = "2.0.1";
+    private const string AppTagline = "Simple Video Download Cut and Convert";
     private const string Publisher = "Byron Iniotakis";
     private const string InstalledAppExeName = "Svid.exe";
     private const string InstalledSetupExeName = "SvidSetup.exe";
@@ -109,8 +110,8 @@ internal static class Program
 
         if (!quiet)
         {
-            MessageBox.Show(
-                $"{AppName} was uninstalled.\n\nYour Downloads and Documents\\Svid files were kept.",
+                MessageBox.Show(
+                $"{AppName} was uninstalled.\n\nYour Downloads and Videos\\Svid files were kept.",
                 $"{AppName} Setup",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
@@ -173,7 +174,7 @@ internal static class Program
         var subtitle = new Label
         {
             AutoSize = true,
-            Text = "Choose where the app files will be installed.",
+            Text = AppTagline,
             Location = new Point(20, 48),
         };
 

@@ -58,8 +58,8 @@ Default folders:
 
 ```text
 Downloads: %USERPROFILE%\Downloads
-Cuts:      %USERPROFILE%\Documents\Svid\cuts
-Converts:  %USERPROFILE%\Documents\Svid\converts
+Cuts:      %USERPROFILE%\Videos\Svid\cuts
+Converts:  %USERPROFILE%\Videos\Svid\converts
 ```
 
 ## Installer
@@ -77,6 +77,13 @@ The installer creates:
 - Windows uninstall entry
 
 Uninstall keeps the user's downloaded, cut, and converted files.
+
+## License
+
+Svid is released under the MIT License. See [LICENSE](LICENSE).
+
+Svid uses third-party open-source tools such as `yt-dlp`, `ffmpeg`, Deno, and
+Microsoft WebView2. Those projects keep their own licenses and credits.
 
 ## Build
 
@@ -106,5 +113,5 @@ already in `dist` are kept.
 After building, create a GitHub release with:
 
 ```powershell
-gh release create v2.0.0 dist\Svid-Setup.exe dist\Svid.exe --title "Svid v2.0.0" --notes-file RELEASE_NOTES.md
+gh release create v2.0.1 dist\Svid-Setup.exe dist\Svid.exe --title "Svid v2.0.1" --notes-file RELEASE_NOTES.md
 ```

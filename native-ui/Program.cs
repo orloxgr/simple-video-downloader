@@ -136,7 +136,7 @@ internal sealed class MainForm : Form
     {
         this.backend = backend;
 
-        Text = "Svid";
+        Text = "Svid - Simple Video Download Cut and Convert";
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(760, 520);
         Size = new Size(960, 680);
