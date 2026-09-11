@@ -20,7 +20,6 @@ needs.
 - Open output folders from inside the app.
 - Hide/show logs when needed.
 - Configure update check frequency separately for `yt-dlp`, `ffmpeg`, and Deno.
-- Includes support/donation links and open-source credits.
 
 ## Download
 

@@ -11,7 +11,6 @@ simple Windows app.
 - Drag and drop local video files into Cut and Convert.
 - Separate output folders for downloads, cuts, and converts.
 - Settings for tool update check frequency per dependency.
-- Built-in support/donation links and open-source thanks.
 - Installer with selectable install path, Start Menu/Desktop shortcuts, and
   proper Windows uninstall.
 - Window title now includes the full tagline:
