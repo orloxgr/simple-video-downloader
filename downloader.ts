@@ -1,6 +1,6 @@
 import { basename, dirname, join, parse, resolve } from "node:path";
 
-const APP_VERSION = "2.2.0";
+const APP_VERSION = "2.3.0";
 const APP_NAME = "Svid";
 const APP_TAGLINE = "Simple Video Download Cut and Convert";
 const APP_REPO = "orloxgr/simple-video-downloader";
@@ -24,6 +24,7 @@ type UpdateInterval = "3d" | "7d" | "30d" | "90d" | "365d" | "never";
 type LocalAction = "audio" | "mp4" | "mkv" | "cut";
 type WebAction = "mp4" | "mkv" | "mp3" | "native";
 type ConvertQuality = "copy" | "high" | "balanced" | "small";
+type SubtitleOutputMode = "srt" | "ass-highlight";
 type LogFn = (line: string) => void;
 type Runner = (command: string, args: string[]) => Promise<number>;
 type CommandOutput = { code: number; stdout: string; stderr: string };
@@ -1323,13 +1324,241 @@ function cleanSubtitleModel(value: unknown): string {
     : "small";
 }
 
+function cleanSubtitleWordsPerCue(value: unknown): number | null {
+  const raw = String(value ?? "keep").trim().toLowerCase();
+  if (raw === "keep") return null;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isInteger(parsed) && parsed >= 1 && parsed <= 20
+    ? parsed
+    : null;
+}
+
+function cleanSubtitleOutputMode(value: unknown): SubtitleOutputMode {
+  return String(value ?? "srt").trim().toLowerCase() === "ass-highlight"
+    ? "ass-highlight"
+    : "srt";
+}
+
+function cleanAssFontSize(value: unknown): number {
+  const parsed = Number.parseInt(String(value ?? "32"), 10);
+  return Number.isInteger(parsed) && parsed >= 16 && parsed <= 96 ? parsed : 32;
+}
+
+function cleanHexColor(value: unknown, fallback: string): string {
+  const raw = String(value ?? "").trim();
+  return /^#[0-9a-f]{6}$/i.test(raw) ? raw.toUpperCase() : fallback;
+}
+
+function fileTimestamp(date = new Date()): string {
+  const part = (value: number, size = 2) => String(value).padStart(size, "0");
+  return `${date.getFullYear()}${part(date.getMonth() + 1)}${
+    part(date.getDate())
+  }-${part(date.getHours())}${part(date.getMinutes())}${
+    part(date.getSeconds())
+  }`;
+}
+
+async function prepareSubtitleScript(
+  scriptPath: string,
+  wordsPerCue: number | null,
+  log: LogFn,
+): Promise<{ path: string; cleanup?: () => Promise<void> }> {
+  if (wordsPerCue === null) {
+    log("Subtitle length: keep text lines");
+    return { path: scriptPath };
+  }
+
+  const text = await Deno.readTextFile(scriptPath);
+  const words = text.split(/\s+/).map((word) => word.trim()).filter(Boolean);
+  if (!words.length) {
+    throw new Error("Text file is empty.");
+  }
+
+  const lines: string[] = [];
+  for (let index = 0; index < words.length; index += wordsPerCue) {
+    lines.push(words.slice(index, index + wordsPerCue).join(" "));
+  }
+
+  const tempDir = await Deno.makeTempDir({ prefix: "svid-subtitles-" });
+  const preparedPath = join(tempDir, "script.txt");
+  await Deno.writeTextFile(preparedPath, `${lines.join("\n")}\n`);
+
+  log(`Subtitle length: ${wordsPerCue} words per subtitle`);
+  log(`Prepared text lines: ${lines.length}`);
+
+  return {
+    path: preparedPath,
+    cleanup: () => removePath(tempDir),
+  };
+}
+
+type SrtCue = {
+  start: number;
+  end: number;
+  text: string;
+};
+
+type AssStyleOptions = {
+  fontSize: number;
+  activeColor: string;
+  passedColor: string;
+};
+
+const defaultAssStyle: AssStyleOptions = {
+  fontSize: 32,
+  activeColor: "#D33360",
+  passedColor: "#F0F0F0",
+};
+
+function parseSrtTime(value: string): number | null {
+  const match = value.trim().match(/^(\d+):(\d{2}):(\d{2}),(\d{3})$/);
+  if (!match) return null;
+  const [, hours, minutes, seconds, milliseconds] = match;
+  return Number(hours) * 3600 + Number(minutes) * 60 + Number(seconds) +
+    Number(milliseconds) / 1000;
+}
+
+function formatAssTime(value: number): string {
+  const totalCentiseconds = Math.max(0, Math.round(value * 100));
+  const hours = Math.floor(totalCentiseconds / 360000);
+  const minutes = Math.floor((totalCentiseconds % 360000) / 6000);
+  const seconds = Math.floor((totalCentiseconds % 6000) / 100);
+  const centiseconds = totalCentiseconds % 100;
+  return `${hours}:${String(minutes).padStart(2, "0")}:${
+    String(seconds).padStart(2, "0")
+  }.${String(centiseconds).padStart(2, "0")}`;
+}
+
+function parseSrt(content: string): SrtCue[] {
+  const blocks = content.replaceAll("\r\n", "\n").replaceAll("\r", "\n")
+    .split(/\n{2,}/);
+  const cues: SrtCue[] = [];
+
+  for (const block of blocks) {
+    const lines = block.split("\n").map((line) => line.trim()).filter(Boolean);
+    const timingIndex = lines.findIndex((line) => line.includes("-->"));
+    if (timingIndex === -1) continue;
+
+    const [startRaw, endRaw] = lines[timingIndex].split("-->").map((part) =>
+      part.trim().split(/\s+/)[0]
+    );
+    const start = parseSrtTime(startRaw);
+    const end = parseSrtTime(endRaw);
+    const text = lines.slice(timingIndex + 1).join(" ").trim();
+    if (start === null || end === null || end <= start || !text) continue;
+
+    cues.push({ start, end, text });
+  }
+
+  return cues;
+}
+
+function escapeAssText(value: string): string {
+  return value
+    .replaceAll("\\", "\\\\")
+    .replaceAll("{", "\\{")
+    .replaceAll("}", "\\}")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function assColor(value: string): string {
+  const clean = cleanHexColor(value, "#F0F0F0").slice(1);
+  const red = clean.slice(0, 2);
+  const green = clean.slice(2, 4);
+  const blue = clean.slice(4, 6);
+  return `&H${blue}${green}${red}&`;
+}
+
+function assColorTag(value: string): string {
+  return `{\\c${assColor(value)}}`;
+}
+
+function buildAssKaraoke(
+  cues: SrtCue[],
+  wordsPerLine: number,
+  style: AssStyleOptions,
+): string {
+  const groupSize = Math.max(1, Math.min(20, wordsPerLine));
+  const events: string[] = [];
+  const futureColor = "#F0F0F0";
+
+  for (let index = 0; index < cues.length; index += groupSize) {
+    const group = cues.slice(index, index + groupSize);
+    if (!group.length) continue;
+
+    for (
+      let activeIndex = 0;
+      activeIndex < group.length;
+      activeIndex += 1
+    ) {
+      const activeCue = group[activeIndex];
+      const nextCue = group[activeIndex + 1];
+      const start = activeCue.start;
+      const end = nextCue?.start ?? activeCue.end;
+      if (end <= start) continue;
+
+      const text = group.map((cue, wordIndex) => {
+        const color = wordIndex < activeIndex
+          ? style.passedColor
+          : wordIndex === activeIndex
+          ? style.activeColor
+          : futureColor;
+        return `${assColorTag(color)}${escapeAssText(cue.text)}`;
+      }).join(" ");
+
+      events.push(
+        `Dialogue: 0,${formatAssTime(start)},${
+          formatAssTime(end)
+        },Default,,0,0,0,,${text}`,
+      );
+    }
+  }
+
+  const primaryColor = assColor(futureColor);
+  const secondaryColor = assColor(style.activeColor);
+
+  return `[Script Info]
+ScriptType: v4.00+
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+YCbCr Matrix: TV.709
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,${style.fontSize},${primaryColor},${secondaryColor},&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,2,1,2,80,80,70,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+${events.join("\n")}
+`;
+}
+
+async function createAssKaraokeFromSrt(
+  srtPath: string,
+  assPath: string,
+  wordsPerLine: number,
+  style: AssStyleOptions,
+): Promise<number> {
+  const cues = parseSrt(await Deno.readTextFile(srtPath));
+  if (!cues.length) return 1;
+  await Deno.writeTextFile(assPath, buildAssKaraoke(cues, wordsPerLine, style));
+  return 0;
+}
+
 async function processSubtitleAlignment(
   mediaPath: string,
   scriptPath: string,
   language: string,
   model: string,
   outputDir: string,
-  options: { runner?: Runner; log?: LogFn } = {},
+  options: {
+    runner?: Runner;
+    log?: LogFn;
+    wordsPerCue?: number | null;
+    outputMode?: SubtitleOutputMode;
+    assStyle?: AssStyleOptions;
+  } = {},
 ): Promise<number> {
   const log = options.log ?? console.log;
   const runner = options.runner ?? run;
@@ -1346,39 +1575,92 @@ async function processSubtitleAlignment(
 
   await Deno.mkdir(outputDir, { recursive: true });
   const parsed = parse(resolve(mediaPath));
-  const output = join(outputDir, `${parsed.name}_aligned.srt`);
+  const outputMode = options.outputMode ?? "srt";
+  const stamp = fileTimestamp();
+  const output = join(
+    outputDir,
+    outputMode === "ass-highlight"
+      ? `${parsed.name}_highlight_${stamp}.ass`
+      : `${parsed.name}_aligned_${stamp}.srt`,
+  );
 
   log("Subtitle alignment");
   log(`Media    : ${mediaPath}`);
   log(`Text     : ${scriptPath}`);
   log(`Language : ${language}`);
   log(`Model    : ${model}`);
+  log(
+    `Format   : ${
+      outputMode === "ass-highlight" ? "ASS word highlight" : "SRT"
+    }`,
+  );
+  if (outputMode === "ass-highlight") {
+    const assStyle = options.assStyle ?? defaultAssStyle;
+    log(`ASS size : ${assStyle.fontSize}`);
+    log(`Active   : ${assStyle.activeColor}`);
+    log(`Passed   : ${assStyle.passedColor}`);
+  }
   log(`Output   : ${output}`);
   log("");
   log(
     "First run can take a while because Python packages and models are downloaded.",
   );
 
-  const code = await runner(exe("uv"), [
-    "tool",
-    "run",
-    "--python",
-    "3.11",
-    "--from",
-    "sub-align[align]",
-    "sub-align",
-    mediaPath,
+  let tempOutputDir: string | undefined;
+  let alignOutput = output;
+  if (outputMode === "ass-highlight") {
+    tempOutputDir = await Deno.makeTempDir({ prefix: "svid-subtitle-words-" });
+    alignOutput = join(tempOutputDir, "word-timings.srt");
+    log("Word highlight: aligning each word first");
+  }
+
+  const prepared = await prepareSubtitleScript(
     scriptPath,
-    "--language",
-    language,
-    "--model",
-    model,
-    "-o",
-    output,
-  ]);
+    outputMode === "ass-highlight" ? 1 : options.wordsPerCue ?? null,
+    log,
+  );
+
+  let code = 1;
+  try {
+    code = await runner(exe("uv"), [
+      "tool",
+      "run",
+      "--python",
+      "3.11",
+      "--from",
+      "sub-align[align]",
+      "sub-align",
+      mediaPath,
+      prepared.path,
+      "--language",
+      language,
+      "--model",
+      model,
+      "-o",
+      alignOutput,
+    ]);
+
+    if (code === 0 && outputMode === "ass-highlight") {
+      const wordsPerLine = options.wordsPerCue ?? 4;
+      code = await createAssKaraokeFromSrt(
+        alignOutput,
+        output,
+        wordsPerLine,
+        options.assStyle ?? defaultAssStyle,
+      );
+      if (code !== 0) log("Could not create ASS highlight subtitles.");
+    }
+  } finally {
+    await prepared.cleanup?.();
+    if (tempOutputDir) await removePath(tempOutputDir);
+  }
 
   if (code === 0) {
-    log(`SRT created: ${output}`);
+    log(
+      outputMode === "ass-highlight"
+        ? `ASS created: ${output}`
+        : `SRT created: ${output}`,
+    );
   }
 
   return code;
@@ -1983,10 +2265,6 @@ function _legacyWebUi(initialTargets: string[], port: number): string {
       document.querySelector("#convertStatus").textContent = message;
     }
 
-    function setSubtitleStatus(message) {
-      document.querySelector("#subtitleStatus").textContent = message;
-    }
-
     function requireCut(action, values, showMessage = true) {
       if (action !== "cut") return true;
       const ok = values.endMs > values.startMs;
@@ -2195,6 +2473,16 @@ function webUi(initialTargets: string[]): string {
       font-weight: 700;
       letter-spacing: 0;
     }
+    .title-row {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+    }
+    .version {
+      color: var(--accent-soft);
+      font-size: 12px;
+      font-weight: 700;
+    }
     .tagline {
       margin-top: 2px;
       color: var(--muted);
@@ -2262,6 +2550,10 @@ function webUi(initialTargets: string[]): string {
       border-radius: 6px;
       background: #101010;
       color: var(--ink);
+    }
+    input[type="color"] {
+      padding: 3px;
+      cursor: pointer;
     }
     .row {
       display: grid;
@@ -2509,6 +2801,14 @@ function webUi(initialTargets: string[]): string {
       background: var(--accent-2);
       transition: width .2s ease;
     }
+    .progress-fill.indeterminate {
+      width: 38%;
+      animation: slide-progress 1.1s ease-in-out infinite;
+    }
+    @keyframes slide-progress {
+      0% { transform: translateX(-110%); }
+      100% { transform: translateX(270%); }
+    }
     .latest-line {
       min-height: 17px;
       color: var(--muted);
@@ -2557,7 +2857,10 @@ function webUi(initialTargets: string[]): string {
 <body>
   <header>
     <div>
-      <h1>${APP_NAME}</h1>
+      <div class="title-row">
+        <h1>${APP_NAME}</h1>
+        <span class="version">v${APP_VERSION}</span>
+      </div>
       <div class="tagline">${APP_TAGLINE}</div>
     </div>
   </header>
@@ -2694,6 +2997,48 @@ function webUi(initialTargets: string[]): string {
           </select>
         </label>
       </div>
+      <label>Subtitle length
+        <select id="subtitleWordsPerCue">
+          <option value="keep">Keep text lines</option>
+          <option value="1">1 word</option>
+          <option value="2">2 words</option>
+          <option value="3">3 words</option>
+          <option value="4" selected>4 words</option>
+          <option value="5">5 words</option>
+          <option value="6">6 words</option>
+          <option value="7">7 words</option>
+          <option value="8">8 words</option>
+          <option value="9">9 words</option>
+          <option value="10">10 words</option>
+          <option value="11">11 words</option>
+          <option value="12">12 words</option>
+          <option value="13">13 words</option>
+          <option value="14">14 words</option>
+          <option value="15">15 words</option>
+          <option value="16">16 words</option>
+          <option value="17">17 words</option>
+          <option value="18">18 words</option>
+          <option value="19">19 words</option>
+          <option value="20">20 words</option>
+        </select>
+      </label>
+      <label>Output
+        <select id="subtitleOutputMode">
+          <option value="srt" selected>SRT</option>
+          <option value="ass-highlight">ASS word highlight</option>
+        </select>
+      </label>
+      <div class="row">
+        <label>ASS font size
+          <input id="subtitleAssFontSize" type="number" min="16" max="96" step="1" value="32">
+        </label>
+        <label>Active word color
+          <input id="subtitleAssActiveColor" type="color" value="#d33360">
+        </label>
+      </div>
+      <label>Passed words color
+        <input id="subtitleAssPassedColor" type="color" value="#f0f0f0">
+      </label>
       <div class="command-row">
         <button id="subtitleBtn">Start Alignment</button>
         <button class="secondary-btn" data-open-folder="subtitles">Open Folder</button>
@@ -2923,6 +3268,10 @@ function webUi(initialTargets: string[]): string {
 
     function setConvertStatus(message) {
       document.querySelector("#convertStatus").textContent = message;
+    }
+
+    function setSubtitleStatus(message) {
+      document.querySelector("#subtitleStatus").textContent = message;
     }
 
     function requireCut(action, values, showMessage = true) {
@@ -3261,6 +3610,11 @@ function webUi(initialTargets: string[]): string {
       const scriptPath = document.querySelector("#subtitleTextPath").value.trim();
       const language = document.querySelector("#subtitleLanguage").value.trim() || "el";
       const model = document.querySelector("#subtitleModel").value;
+      const wordsPerCue = document.querySelector("#subtitleWordsPerCue").value;
+      const outputMode = document.querySelector("#subtitleOutputMode").value;
+      const assFontSize = document.querySelector("#subtitleAssFontSize").value;
+      const assActiveColor = document.querySelector("#subtitleAssActiveColor").value;
+      const assPassedColor = document.querySelector("#subtitleAssPassedColor").value;
       if (!mediaPath || !scriptPath) {
         setSubtitleStatus("Choose media and text files first.");
         return;
@@ -3272,7 +3626,12 @@ function webUi(initialTargets: string[]): string {
           mediaPath,
           scriptPath,
           language,
-          model
+          model,
+          wordsPerCue,
+          outputMode,
+          assFontSize,
+          assActiveColor,
+          assPassedColor
         });
         setSubtitleStatus("Subtitle job started.");
         await refreshJobs();
@@ -3362,15 +3721,17 @@ function webUi(initialTargets: string[]): string {
       for (const job of jobs) {
         const el = document.createElement("div");
         el.className = "job";
-        const progress = typeof job.progress === "number" ? Math.max(0, Math.min(100, job.progress)) : 0;
-        const latest = job.latestLine || "Waiting...";
+        const hasProgress = typeof job.progress === "number";
+        const progress = hasProgress ? Math.max(0, Math.min(100, job.progress)) : 0;
+        const indeterminate = job.status === "running" && !hasProgress;
+        const latest = job.latestLine || (indeterminate ? "Working..." : "Waiting...");
         el.innerHTML = \`
           <div class="job-head">
             <div class="path" title="\${job.title.replaceAll('"', "&quot;")}">\${job.title}</div>
             <div class="badge \${job.status}">\${job.status}</div>
           </div>
           <div class="job-progress">
-            <div class="progress-track"><div class="progress-fill" style="width:\${progress}%"></div></div>
+            <div class="progress-track"><div class="progress-fill \${indeterminate ? "indeterminate" : ""}" style="\${indeterminate ? "" : "width:" + progress + "%"}"></div></div>
             <div class="latest-line" title="\${latest.replaceAll('"', "&quot;")}">\${latest}</div>
           </div>
           <button class="log-toggle" data-job-id="\${job.id}">\${openLogs.has(job.id) ? "Hide Logs" : "Show Logs"}</button>
@@ -3546,8 +3907,27 @@ async function handleUiRequest(
       const scriptPath = cleanInput(String(body.scriptPath ?? ""));
       const language = cleanLanguageCode(body.language);
       const model = cleanSubtitleModel(body.model);
+      const wordsPerCue = cleanSubtitleWordsPerCue(body.wordsPerCue);
+      const outputMode = cleanSubtitleOutputMode(body.outputMode);
+      const assStyle: AssStyleOptions = {
+        fontSize: cleanAssFontSize(body.assFontSize),
+        activeColor: cleanHexColor(
+          body.assActiveColor,
+          defaultAssStyle.activeColor,
+        ),
+        passedColor: cleanHexColor(
+          body.assPassedColor,
+          defaultAssStyle.passedColor,
+        ),
+      };
       if (!mediaPath || !scriptPath) {
         return json({ error: "Missing media or text file." }, 400);
+      }
+      if (!(await exists(mediaPath))) {
+        return json({ error: `Media file not found: ${mediaPath}` }, 400);
+      }
+      if (!(await exists(scriptPath))) {
+        return json({ error: `Text file not found: ${scriptPath}` }, 400);
       }
 
       const job = createJob(`Subtitles: ${basename(mediaPath)}`);
@@ -3578,7 +3958,13 @@ async function handleUiRequest(
           language,
           model,
           settings.outputDirs.subtitles,
-          { runner, log: (line) => appendLog(job, line) },
+          {
+            runner,
+            log: (line) => appendLog(job, line),
+            wordsPerCue,
+            outputMode,
+            assStyle,
+          },
         );
       });
 

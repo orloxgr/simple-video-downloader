@@ -1,23 +1,33 @@
-# Svid v2.2.0
+# Svid v2.3.0
 
-Svid helps you download videos, cut clips, and convert media files from one
-simple Windows app.
+Svid is a Windows app for downloading videos, cutting clips, converting media,
+and creating subtitles from a corrected text file.
 
-## What's Included
+## What's New
 
-- Download videos as MP4, MKV, MP3, or the original format.
+- Added subtitle alignment from video/audio plus a corrected TXT script.
+- Added subtitle output folders under `%USERPROFILE%\Videos\Svid\subtitles`.
+- Added `SRT` output for normal subtitles.
+- Added `ASS word highlight` output for word-by-word highlighted subtitles.
+- Added ASS subtitle controls for font size, active word color, and passed
+  words color.
+- Added subtitle length control from 1 to 20 words per subtitle, plus an option
+  to keep the original text lines.
+- Subtitle files now include a date-time stamp in the filename, so repeated runs
+  do not overwrite older subtitle files.
+- Added app version display in the Svid window header.
+
+## Also Included
+
+- Download videos as MP4, MKV, MP3, or original format.
 - Cut videos by choosing start and end times.
 - Convert local files with quality presets.
-- Create SRT subtitles from a video/audio file and a corrected TXT script.
 - Drag and drop local video files into Cut and Convert.
 - Separate output folders for downloads, cuts, converts, and subtitles.
 - Check for Svid updates from Settings and run the installer.
 - Settings for update check frequency per item.
 - Installer with selectable install path, Start Menu/Desktop shortcuts, and
-  proper Windows uninstall.
-- Window title now includes the full tagline:
-  `Simple Video Download Cut and Convert`.
-- Default cut/convert folders now live under Videos instead of Documents.
+  Windows uninstall.
 
 ## Default Folders
 
@@ -28,5 +38,5 @@ simple Windows app.
 
 ## Files
 
-- `Svid-Setup.exe`: recommended installer.
+- `Svid-Setup.exe`: installer.
 - `Svid.exe`: portable app.

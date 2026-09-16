@@ -14,7 +14,8 @@ need to install these tools manually; Svid downloads or bundles what it needs.
 - Download videos as MP4, MKV, MP3, or the original format.
 - Cut local videos by choosing start and end times.
 - Convert local videos/audio with quality presets.
-- Create SRT subtitles from a video/audio file and a corrected TXT script.
+- Create SRT or ASS word-highlight subtitles from a video/audio file and a
+  corrected TXT script.
 - Drag and drop files into Cut and Convert.
 - Separate folders for downloads, cuts, converts, and subtitles.
 - Open output folders from inside the app.
@@ -115,5 +116,5 @@ already in `dist` are kept.
 After building, create a GitHub release with:
 
 ```powershell
-gh release create v2.2.0 dist\Svid-Setup.exe dist\Svid.exe --title "Svid v2.2.0" --notes-file RELEASE_NOTES.md
+gh release create v2.3.0 dist\Svid-Setup.exe dist\Svid.exe --title "Svid v2.3.0" --notes-file RELEASE_NOTES.md
 ```
