@@ -1,11 +1,13 @@
 import { basename, dirname, join, parse, resolve } from "node:path";
 
-const APP_VERSION = "2.1.0";
+const APP_VERSION = "2.2.0";
 const APP_NAME = "Svid";
 const APP_TAGLINE = "Simple Video Download Cut and Convert";
 const APP_REPO = "orloxgr/simple-video-downloader";
 const APP_LATEST_RELEASE_API =
   `https://api.github.com/repos/${APP_REPO}/releases/latest`;
+const UV_DOWNLOAD_URL =
+  "https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip";
 
 const appDir = dirname(Deno.execPath());
 const isWindows = Deno.build.os === "windows";
@@ -42,6 +44,7 @@ type AppSettings = {
     downloads: string;
     cuts: string;
     converts: string;
+    subtitles: string;
   };
 };
 
@@ -65,6 +68,7 @@ const defaultSettings: AppSettings = {
     downloads: userDownloadsDir,
     cuts: join(svidVideosDir, "cuts"),
     converts: join(svidVideosDir, "converts"),
+    subtitles: join(svidVideosDir, "subtitles"),
   },
 };
 
@@ -72,6 +76,7 @@ const legacyDefaultOutputDirs: AppSettings["outputDirs"] = {
   downloads: join(appDir, "downloads"),
   cuts: join(appDir, "cuts"),
   converts: join(appDir, "converts"),
+  subtitles: join(appDir, "subtitles"),
 };
 
 function toolEnv(): Record<string, string> {
@@ -115,7 +120,9 @@ function normalizeSettings(raw: unknown): AppSettings {
     }
   }
 
-  for (const key of ["downloads", "cuts", "converts"] as const) {
+  for (
+    const key of ["downloads", "cuts", "converts", "subtitles"] as const
+  ) {
     const value = source.outputDirs?.[key];
     if (typeof value === "string" && value.trim()) {
       const normalized = resolve(value.trim());
@@ -428,7 +435,10 @@ async function capture(
   };
 }
 
-async function browseWindowsVideoFile(): Promise<string | null> {
+async function browseWindowsFile(
+  title = "Select file",
+  filter = "All files (*.*)|*.*",
+): Promise<string | null> {
   if (!isWindows) return null;
 
   const tempDir = await Deno.makeTempDir({ prefix: "svdc-picker-" });
@@ -439,8 +449,8 @@ async function browseWindowsVideoFile(): Promise<string | null> {
       "$ErrorActionPreference = 'Stop'",
       "Add-Type -AssemblyName System.Windows.Forms",
       "$dialog = New-Object System.Windows.Forms.OpenFileDialog",
-      "$dialog.Title = 'Select video file'",
-      "$dialog.Filter = 'Video files (*.mp4;*.mkv;*.mov;*.webm;*.avi;*.m4v)|*.mp4;*.mkv;*.mov;*.webm;*.avi;*.m4v|All files (*.*)|*.*'",
+      `$dialog.Title = ${powershellString(title)}`,
+      `$dialog.Filter = ${powershellString(filter)}`,
       "$dialog.Multiselect = $false",
       "if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {",
       `  [System.IO.File]::WriteAllText(${
@@ -473,6 +483,20 @@ async function browseWindowsVideoFile(): Promise<string | null> {
   } finally {
     await removePath(tempDir);
   }
+}
+
+async function browseWindowsVideoFile(): Promise<string | null> {
+  return await browseWindowsFile(
+    "Select video or audio file",
+    "Media files (*.mp4;*.mkv;*.mov;*.webm;*.avi;*.m4v;*.mp3;*.wav;*.m4a;*.flac;*.aac)|*.mp4;*.mkv;*.mov;*.webm;*.avi;*.m4v;*.mp3;*.wav;*.m4a;*.flac;*.aac|All files (*.*)|*.*",
+  );
+}
+
+async function browseWindowsTextFile(): Promise<string | null> {
+  return await browseWindowsFile(
+    "Select text file",
+    "Text files (*.txt)|*.txt|All files (*.*)|*.*",
+  );
 }
 
 async function downloadFile(url: string, destination: string) {
@@ -844,6 +868,45 @@ async function downloadFfmpeg(log: LogFn = console.log) {
   } catch (error) {
     log("    (ffmpeg download skipped - offline?)");
     if (error instanceof Error) log(`    ${error.message}`);
+  } finally {
+    await removePath(temp);
+    await removePath(zip);
+  }
+}
+
+async function ensureUv(log: LogFn = console.log): Promise<boolean> {
+  const uv = exe("uv");
+  if (await exists(uv)) return true;
+
+  log("uv is missing. Downloading subtitle tool runner...");
+  const zip = join(appDir, "uv.zip");
+  const temp = join(appDir, "uv_temp");
+
+  try {
+    await removePath(temp);
+    await downloadFile(UV_DOWNLOAD_URL, zip);
+    await extractZip(zip, temp);
+
+    let found = false;
+    for await (const file of walk(temp)) {
+      if (basename(file).toLowerCase() === "uv.exe") {
+        await Deno.copyFile(file, uv);
+        found = true;
+        break;
+      }
+    }
+
+    if (!found) {
+      log("uv.exe was not found in the downloaded archive.");
+      return false;
+    }
+
+    log("uv downloaded successfully.");
+    return true;
+  } catch (error) {
+    log("uv download failed.");
+    if (error instanceof Error) log(error.message);
+    return false;
   } finally {
     await removePath(temp);
     await removePath(zip);
@@ -1246,6 +1309,79 @@ async function processLocalFile(
   }
 
   return await cutLocalVideo(target, outputBase);
+}
+
+function cleanLanguageCode(value: unknown): string {
+  const raw = String(value ?? "el").trim().toLowerCase();
+  return /^[a-z]{2,3}(-[a-z0-9]+)?$/i.test(raw) ? raw : "el";
+}
+
+function cleanSubtitleModel(value: unknown): string {
+  const raw = String(value ?? "small").trim();
+  return ["tiny", "base", "small", "medium", "large-v3"].includes(raw)
+    ? raw
+    : "small";
+}
+
+async function processSubtitleAlignment(
+  mediaPath: string,
+  scriptPath: string,
+  language: string,
+  model: string,
+  outputDir: string,
+  options: { runner?: Runner; log?: LogFn } = {},
+): Promise<number> {
+  const log = options.log ?? console.log;
+  const runner = options.runner ?? run;
+
+  if (!(await exists(mediaPath))) {
+    log(`Media file not found: ${mediaPath}`);
+    return 1;
+  }
+
+  if (!(await exists(scriptPath))) {
+    log(`Text file not found: ${scriptPath}`);
+    return 1;
+  }
+
+  await Deno.mkdir(outputDir, { recursive: true });
+  const parsed = parse(resolve(mediaPath));
+  const output = join(outputDir, `${parsed.name}_aligned.srt`);
+
+  log("Subtitle alignment");
+  log(`Media    : ${mediaPath}`);
+  log(`Text     : ${scriptPath}`);
+  log(`Language : ${language}`);
+  log(`Model    : ${model}`);
+  log(`Output   : ${output}`);
+  log("");
+  log(
+    "First run can take a while because Python packages and models are downloaded.",
+  );
+
+  const code = await runner(exe("uv"), [
+    "tool",
+    "run",
+    "--python",
+    "3.11",
+    "--from",
+    "sub-align[align]",
+    "sub-align",
+    mediaPath,
+    scriptPath,
+    "--language",
+    language,
+    "--model",
+    model,
+    "-o",
+    output,
+  ]);
+
+  if (code === 0) {
+    log(`SRT created: ${output}`);
+  }
+
+  return code;
 }
 
 function ytDlpCommonArgs(): string[] {
@@ -1847,6 +1983,10 @@ function _legacyWebUi(initialTargets: string[], port: number): string {
       document.querySelector("#convertStatus").textContent = message;
     }
 
+    function setSubtitleStatus(message) {
+      document.querySelector("#subtitleStatus").textContent = message;
+    }
+
     function requireCut(action, values, showMessage = true) {
       if (action !== "cut") return true;
       const ok = values.endMs > values.startMs;
@@ -2069,7 +2209,7 @@ function webUi(initialTargets: string[]): string {
     }
     .tabs {
       display: grid;
-      grid-template-columns: repeat(4, 1fr);
+      grid-template-columns: repeat(5, 1fr);
       gap: 7px;
       padding: 6px;
       border: 1px solid var(--line);
@@ -2426,6 +2566,7 @@ function webUi(initialTargets: string[]): string {
       <button class="tab-btn active" data-tab="download">Download</button>
       <button class="tab-btn" data-tab="cut">Cut</button>
       <button class="tab-btn" data-tab="convert">Convert</button>
+      <button class="tab-btn" data-tab="subtitles">Subtitles</button>
       <button class="tab-btn" data-tab="settings">Settings</button>
     </nav>
 
@@ -2519,6 +2660,47 @@ function webUi(initialTargets: string[]): string {
       <div id="convertStatus" class="status error"></div>
     </section>
 
+    <section id="subtitles" class="tab-panel">
+      <h2>Subtitles</h2>
+      <div class="source-row">
+        <div id="subtitleMediaDrop" class="drop small">Click or drop video/audio here</div>
+        <label>Video or audio path
+          <div class="path-input-row">
+            <input id="subtitleMediaPath" placeholder="C:\\\\Videos\\\\speech.mp4" autocomplete="off">
+            <button id="subtitleMediaBrowseBtn" class="secondary-btn" type="button">Browse</button>
+          </div>
+        </label>
+      </div>
+      <div class="source-row">
+        <div id="subtitleTextDrop" class="drop small">Click or drop text here</div>
+        <label>Corrected text path
+          <div class="path-input-row">
+            <input id="subtitleTextPath" placeholder="C:\\\\Videos\\\\script.txt" autocomplete="off">
+            <button id="subtitleTextBrowseBtn" class="secondary-btn" type="button">Browse</button>
+          </div>
+        </label>
+      </div>
+      <div class="row">
+        <label>Language code
+          <input id="subtitleLanguage" value="el" autocomplete="off">
+        </label>
+        <label>Whisper model
+          <select id="subtitleModel">
+            <option value="tiny">Tiny</option>
+            <option value="base">Base</option>
+            <option value="small" selected>Small</option>
+            <option value="medium">Medium</option>
+            <option value="large-v3">Large v3</option>
+          </select>
+        </label>
+      </div>
+      <div class="command-row">
+        <button id="subtitleBtn">Start Alignment</button>
+        <button class="secondary-btn" data-open-folder="subtitles">Open Folder</button>
+      </div>
+      <div id="subtitleStatus" class="status error"></div>
+    </section>
+
     <section id="settings" class="tab-panel">
       <h2>Settings</h2>
       <label>Svid update check
@@ -2576,6 +2758,9 @@ function webUi(initialTargets: string[]): string {
       <label>Converts folder
         <input id="convertsDir" autocomplete="off">
       </label>
+      <label>Subtitles folder
+        <input id="subtitlesDir" autocomplete="off">
+      </label>
       <button id="saveSettingsBtn">Save Settings</button>
       <div id="settingsStatus" class="status"></div>
       <div class="support-box">
@@ -2618,6 +2803,22 @@ function webUi(initialTargets: string[]): string {
             </div>
             <a class="tool-link" href="https://deno.com/" target="_blank" rel="noopener noreferrer">Project</a>
             <a class="tool-link donate" href="https://github.com/sponsors/denoland" target="_blank" rel="noopener noreferrer">Sponsor</a>
+          </div>
+          <div class="thanks-item">
+            <div>
+              <div class="thanks-name">sub-align</div>
+              <div class="thanks-role">Subtitle alignment</div>
+            </div>
+            <a class="tool-link" href="https://pypi.org/project/sub-align/" target="_blank" rel="noopener noreferrer">Project</a>
+            <a class="tool-link" href="https://github.com/m-bain/whisperX" target="_blank" rel="noopener noreferrer">WhisperX</a>
+          </div>
+          <div class="thanks-item">
+            <div>
+              <div class="thanks-name">uv</div>
+              <div class="thanks-role">Python tool runner</div>
+            </div>
+            <a class="tool-link" href="https://github.com/astral-sh/uv" target="_blank" rel="noopener noreferrer">Project</a>
+            <a class="tool-link" href="https://docs.astral.sh/uv/" target="_blank" rel="noopener noreferrer">Docs</a>
           </div>
           <div class="thanks-item">
             <div>
@@ -2754,6 +2955,7 @@ function webUi(initialTargets: string[]): string {
       document.querySelector("#downloadsDir").value = settings.outputDirs.downloads;
       document.querySelector("#cutsDir").value = settings.outputDirs.cuts;
       document.querySelector("#convertsDir").value = settings.outputDirs.converts;
+      document.querySelector("#subtitlesDir").value = settings.outputDirs.subtitles;
     }
 
     document.querySelector("#saveSettingsBtn").addEventListener("click", async () => {
@@ -2768,7 +2970,8 @@ function webUi(initialTargets: string[]): string {
         outputDirs: {
           downloads: document.querySelector("#downloadsDir").value,
           cuts: document.querySelector("#cutsDir").value,
-          converts: document.querySelector("#convertsDir").value
+          converts: document.querySelector("#convertsDir").value,
+          subtitles: document.querySelector("#subtitlesDir").value
         }
       });
       status.textContent = "Saved.";
@@ -2907,6 +3110,18 @@ function webUi(initialTargets: string[]): string {
       if (activeTab === "convert") {
         document.querySelector("#convertPath").value = paths[0];
         setConvertStatus("File selected. Choose action, then press Start Convert.");
+        return;
+      }
+
+      if (activeTab === "subtitles") {
+        const path = paths[0];
+        if (/\\.txt$/i.test(path)) {
+          document.querySelector("#subtitleTextPath").value = path;
+          setSubtitleStatus("Text selected.");
+        } else {
+          document.querySelector("#subtitleMediaPath").value = path;
+          setSubtitleStatus("Media selected.");
+        }
       }
     }
 
@@ -2976,6 +3191,94 @@ function webUi(initialTargets: string[]): string {
 
     document.querySelector("#convertBrowseBtn").addEventListener("click", () => {
       browseConvertFile();
+    });
+
+    async function browseSubtitleMediaFile(fallbackMessage = "") {
+      if (fallbackMessage) setSubtitleStatus(fallbackMessage);
+      const result = await postJson("/api/browse-file", { kind: "media" });
+      if (result.path) {
+        document.querySelector("#subtitleMediaPath").value = result.path;
+        setSubtitleStatus("Media selected.");
+      } else if (fallbackMessage) {
+        setSubtitleStatus("");
+      }
+    }
+
+    async function browseSubtitleTextFile(fallbackMessage = "") {
+      if (fallbackMessage) setSubtitleStatus(fallbackMessage);
+      const result = await postJson("/api/browse-file", { kind: "text" });
+      if (result.path) {
+        document.querySelector("#subtitleTextPath").value = result.path;
+        setSubtitleStatus("Text selected.");
+      } else if (fallbackMessage) {
+        setSubtitleStatus("");
+      }
+    }
+
+    document.querySelector("#subtitleMediaBrowseBtn").addEventListener("click", () => {
+      browseSubtitleMediaFile();
+    });
+
+    document.querySelector("#subtitleTextBrowseBtn").addEventListener("click", () => {
+      browseSubtitleTextFile();
+    });
+
+    function setupPathDrop(zoneId, inputId, fallback) {
+      const zone = document.querySelector("#" + zoneId);
+      zone.addEventListener("click", fallback);
+      for (const eventName of ["dragenter", "dragover"]) {
+        zone.addEventListener(eventName, event => {
+          event.preventDefault();
+          zone.classList.add("active");
+        });
+      }
+      for (const eventName of ["dragleave", "drop"]) {
+        zone.addEventListener(eventName, event => {
+          event.preventDefault();
+          zone.classList.remove("active");
+        });
+      }
+      zone.addEventListener("drop", async event => {
+        const droppedPath = pathFromDropText(
+          event.dataTransfer.getData("text/uri-list") ||
+          event.dataTransfer.getData("text/plain") ||
+          ""
+        );
+        if (droppedPath) {
+          document.querySelector("#" + inputId).value = droppedPath;
+          setSubtitleStatus("File selected.");
+          return;
+        }
+        await fallback("Windows hides paths from this drop. Pick the same file once.");
+      });
+    }
+
+    setupPathDrop("subtitleMediaDrop", "subtitleMediaPath", browseSubtitleMediaFile);
+    setupPathDrop("subtitleTextDrop", "subtitleTextPath", browseSubtitleTextFile);
+
+    document.querySelector("#subtitleBtn").addEventListener("click", async () => {
+      const mediaPath = document.querySelector("#subtitleMediaPath").value.trim();
+      const scriptPath = document.querySelector("#subtitleTextPath").value.trim();
+      const language = document.querySelector("#subtitleLanguage").value.trim() || "el";
+      const model = document.querySelector("#subtitleModel").value;
+      if (!mediaPath || !scriptPath) {
+        setSubtitleStatus("Choose media and text files first.");
+        return;
+      }
+      try {
+        setSubtitleStatus("Starting subtitle alignment...");
+        await postJson("/api/jobs", {
+          kind: "subtitle",
+          mediaPath,
+          scriptPath,
+          language,
+          model
+        });
+        setSubtitleStatus("Subtitle job started.");
+        await refreshJobs();
+      } catch (error) {
+        setSubtitleStatus(error instanceof Error ? error.message : String(error));
+      }
     });
 
     function setupConvertFileDrop() {
@@ -3152,7 +3455,9 @@ async function handleUiRequest(
       }
     }
 
-    for (const key of ["downloads", "cuts", "converts"] as const) {
+    for (
+      const key of ["downloads", "cuts", "converts", "subtitles"] as const
+    ) {
       const value = body.outputDirs?.[key];
       if (typeof value === "string" && value.trim()) {
         settings.outputDirs[key] = resolve(value.trim());
@@ -3190,7 +3495,10 @@ async function handleUiRequest(
     const body = await request.json();
     const settings = await loadSettings();
     const key = String(body.key ?? "");
-    if (key !== "downloads" && key !== "cuts" && key !== "converts") {
+    if (
+      key !== "downloads" && key !== "cuts" && key !== "converts" &&
+      key !== "subtitles"
+    ) {
       return json({ error: "Invalid folder key." }, 400);
     }
 
@@ -3211,7 +3519,11 @@ async function handleUiRequest(
   }
 
   if (request.method === "POST" && url.pathname === "/api/browse-file") {
-    const path = await browseWindowsVideoFile();
+    const body = await request.json().catch(() => ({}));
+    const kind = String(body.kind ?? "media");
+    const path = kind === "text"
+      ? await browseWindowsTextFile()
+      : await browseWindowsVideoFile();
     return json({ path });
   }
 
@@ -3225,7 +3537,53 @@ async function handleUiRequest(
     const target = cleanInput(String(body.target ?? ""));
     const action = String(body.action ?? "");
 
-    if (!target) return json({ error: "Missing target." }, 400);
+    if (body.kind !== "subtitle" && !target) {
+      return json({ error: "Missing target." }, 400);
+    }
+
+    if (body.kind === "subtitle") {
+      const mediaPath = cleanInput(String(body.mediaPath ?? ""));
+      const scriptPath = cleanInput(String(body.scriptPath ?? ""));
+      const language = cleanLanguageCode(body.language);
+      const model = cleanSubtitleModel(body.model);
+      if (!mediaPath || !scriptPath) {
+        return json({ error: "Missing media or text file." }, 400);
+      }
+
+      const job = createJob(`Subtitles: ${basename(mediaPath)}`);
+      const runner: Runner = (command, args) =>
+        runLogged(command, args, (line) => appendLog(job, line), {
+          env: {
+            UV_CACHE_DIR: join(appDir, "uv-cache"),
+            UV_TOOL_DIR: join(appDir, "uv-tools"),
+            UV_PYTHON_INSTALL_DIR: join(appDir, "uv-python"),
+            UV_LINK_MODE: "copy",
+          },
+        });
+      const settings = await loadSettings();
+
+      startJob(job, async (log) => {
+        log("Checking ffmpeg...");
+        if (!(await ensureTool("ffmpeg"))) {
+          log("ffmpeg could not be installed.");
+          return 1;
+        }
+
+        log("Checking subtitle tools...");
+        if (!(await ensureUv(log))) return 1;
+
+        return await processSubtitleAlignment(
+          mediaPath,
+          scriptPath,
+          language,
+          model,
+          settings.outputDirs.subtitles,
+          { runner, log: (line) => appendLog(job, line) },
+        );
+      });
+
+      return json({ jobId: job.id });
+    }
 
     const job = createJob(target);
     const runner: Runner = (command, args) =>

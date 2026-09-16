@@ -3,8 +3,8 @@
 Simple Video Download Cut and Convert
 
 Svid helps you download videos, cut clips, and convert media files from one
-simple Windows app. It supports drag and drop, keeps downloads/cuts/converts in
-separate folders, and includes a normal installer/uninstaller.
+simple Windows app. It supports drag and drop, keeps downloads/cuts/converts/
+subtitles in separate folders, and includes a normal installer/uninstaller.
 
 It is powered by `yt-dlp`, `ffmpeg`, Deno, and Microsoft WebView2. You do not
 need to install these tools manually; Svid downloads or bundles what it needs.
@@ -14,8 +14,9 @@ need to install these tools manually; Svid downloads or bundles what it needs.
 - Download videos as MP4, MKV, MP3, or the original format.
 - Cut local videos by choosing start and end times.
 - Convert local videos/audio with quality presets.
+- Create SRT subtitles from a video/audio file and a corrected TXT script.
 - Drag and drop files into Cut and Convert.
-- Separate folders for downloads, cuts, and converts.
+- Separate folders for downloads, cuts, converts, and subtitles.
 - Open output folders from inside the app.
 - Hide/show logs when needed.
 - Check for Svid updates from Settings and run the installer.
@@ -59,6 +60,7 @@ Default folders:
 Downloads: %USERPROFILE%\Downloads
 Cuts:      %USERPROFILE%\Videos\Svid\cuts
 Converts:  %USERPROFILE%\Videos\Svid\converts
+Subtitles: %USERPROFILE%\Videos\Svid\subtitles
 ```
 
 ## Installer
@@ -81,8 +83,9 @@ Uninstall keeps your downloaded, cut, and converted files.
 
 Svid is released under the MIT License. See [LICENSE](LICENSE).
 
-Svid uses third-party open-source tools such as `yt-dlp`, `ffmpeg`, Deno, and
-Microsoft WebView2. Those projects keep their own licenses and credits.
+Svid uses third-party open-source tools such as `yt-dlp`, `ffmpeg`, Deno,
+`sub-align`, `uv`, and Microsoft WebView2. Those projects keep their own
+licenses and credits.
 
 ## Build
 
@@ -112,5 +115,5 @@ already in `dist` are kept.
 After building, create a GitHub release with:
 
 ```powershell
-gh release create v2.1.0 dist\Svid-Setup.exe dist\Svid.exe --title "Svid v2.1.0" --notes-file RELEASE_NOTES.md
+gh release create v2.2.0 dist\Svid-Setup.exe dist\Svid.exe --title "Svid v2.2.0" --notes-file RELEASE_NOTES.md
 ```

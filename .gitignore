@@ -14,6 +14,12 @@
 /ffplay.exe
 /ffprobe.exe
 /python.exe
+/uv.exe
+/uv.zip
+/uv-cache/
+/uv-tools/
+/uv-python/
+/uv_temp/
 
 # Local app state and generated media
 /settings.json
