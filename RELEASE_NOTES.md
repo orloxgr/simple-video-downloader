@@ -1,10 +1,13 @@
-# Svid v2.3.2
+# Svid v2.3.3
 
 Svid is a Windows app for downloading videos, cutting clips, converting media,
 and creating subtitles from a corrected text file.
 
 ## What's New
 
+- Changed SRT subtitle length handling so Svid aligns the original TXT first,
+  then splits the final SRT into the selected number of words per subtitle.
+  This avoids overloading alignment with hundreds of very short script lines.
 - Reduced subtitle alignment memory pressure by limiting Python numeric library
   threads during alignment.
 - Added a clear out-of-memory message when subtitle alignment fails because the

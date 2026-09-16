@@ -116,5 +116,5 @@ already in `dist` are kept.
 After building, create a GitHub release with:
 
 ```powershell
-gh release create v2.3.2 dist\Svid-Setup.exe dist\Svid.exe --title "Svid v2.3.2" --notes-file RELEASE_NOTES.md
+gh release create v2.3.3 dist\Svid-Setup.exe dist\Svid.exe --title "Svid v2.3.3" --notes-file RELEASE_NOTES.md
 ```

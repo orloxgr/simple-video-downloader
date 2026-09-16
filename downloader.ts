@@ -1,6 +1,6 @@
 import { basename, dirname, join, parse, resolve } from "node:path";
 
-const APP_VERSION = "2.3.2";
+const APP_VERSION = "2.3.3";
 const APP_NAME = "Svid";
 const APP_TAGLINE = "Simple Video Download Cut and Convert";
 const APP_REPO = "orloxgr/simple-video-downloader";
@@ -1362,9 +1362,10 @@ async function prepareSubtitleScript(
   scriptPath: string,
   wordsPerCue: number | null,
   log: LogFn,
+  logKeepLines = true,
 ): Promise<{ path: string; cleanup?: () => Promise<void> }> {
   if (wordsPerCue === null) {
-    log("Subtitle length: keep text lines");
+    if (logKeepLines) log("Subtitle length: keep text lines");
     return { path: scriptPath };
   }
 
@@ -1429,6 +1430,19 @@ function formatAssTime(value: number): string {
   }.${String(centiseconds).padStart(2, "0")}`;
 }
 
+function formatSrtTime(value: number): string {
+  const totalMilliseconds = Math.max(0, Math.round(value * 1000));
+  const hours = Math.floor(totalMilliseconds / 3_600_000);
+  const minutes = Math.floor((totalMilliseconds % 3_600_000) / 60_000);
+  const seconds = Math.floor((totalMilliseconds % 60_000) / 1000);
+  const milliseconds = totalMilliseconds % 1000;
+  return `${String(hours).padStart(2, "0")}:${
+    String(minutes).padStart(2, "0")
+  }:${String(seconds).padStart(2, "0")},${
+    String(milliseconds).padStart(3, "0")
+  }`;
+}
+
 function parseSrt(content: string): SrtCue[] {
   const blocks = content.replaceAll("\r\n", "\n").replaceAll("\r", "\n")
     .split(/\n{2,}/);
@@ -1451,6 +1465,43 @@ function parseSrt(content: string): SrtCue[] {
   }
 
   return cues;
+}
+
+function splitSrtCuesByWords(cues: SrtCue[], wordsPerCue: number): SrtCue[] {
+  const size = Math.max(1, Math.min(20, wordsPerCue));
+  const split: SrtCue[] = [];
+
+  for (const cue of cues) {
+    const words = cue.text.split(/\s+/).map((word) => word.trim()).filter(
+      Boolean,
+    );
+    if (words.length <= size) {
+      split.push(cue);
+      continue;
+    }
+
+    const duration = Math.max(0.001, cue.end - cue.start);
+    const secondsPerWord = duration / words.length;
+    for (let index = 0; index < words.length; index += size) {
+      const chunk = words.slice(index, index + size);
+      split.push({
+        start: cue.start + index * secondsPerWord,
+        end: cue.start + Math.min(index + chunk.length, words.length) *
+            secondsPerWord,
+        text: chunk.join(" "),
+      });
+    }
+  }
+
+  return split.map((cue, index) => ({ ...cue, index: index + 1 }));
+}
+
+function formatSrt(cues: SrtCue[]): string {
+  return cues.map((cue, index) =>
+    `${index + 1}\n${formatSrtTime(cue.start)} --> ${
+      formatSrtTime(cue.end)
+    }\n${cue.text}`
+  ).join("\n\n") + "\n";
 }
 
 function escapeAssText(value: string): string {
@@ -1608,16 +1659,26 @@ async function processSubtitleAlignment(
 
   let tempOutputDir: string | undefined;
   let alignOutput = output;
+  const srtWordsPerCue = outputMode === "srt"
+    ? options.wordsPerCue ?? null
+    : null;
+  if (outputMode === "ass-highlight" || srtWordsPerCue !== null) {
+    tempOutputDir = await Deno.makeTempDir({ prefix: "svid-subtitle-align-" });
+    alignOutput = join(tempOutputDir, "aligned.srt");
+  }
   if (outputMode === "ass-highlight") {
-    tempOutputDir = await Deno.makeTempDir({ prefix: "svid-subtitle-words-" });
-    alignOutput = join(tempOutputDir, "word-timings.srt");
     log("Word highlight: aligning each word first");
+  } else if (srtWordsPerCue !== null) {
+    log(
+      `Subtitle length: ${srtWordsPerCue} words per subtitle after alignment`,
+    );
   }
 
   const prepared = await prepareSubtitleScript(
     scriptPath,
-    outputMode === "ass-highlight" ? 1 : options.wordsPerCue ?? null,
+    outputMode === "ass-highlight" ? 1 : null,
     log,
+    srtWordsPerCue === null,
   );
 
   let code = 1;
@@ -1639,6 +1700,18 @@ async function processSubtitleAlignment(
       "-o",
       alignOutput,
     ]);
+
+    if (code === 0 && outputMode === "srt" && srtWordsPerCue !== null) {
+      const cues = parseSrt(await Deno.readTextFile(alignOutput));
+      const split = splitSrtCuesByWords(cues, srtWordsPerCue);
+      if (!split.length) {
+        log("Could not split SRT subtitles.");
+        code = 1;
+      } else {
+        await Deno.writeTextFile(output, formatSrt(split));
+        log(`Final subtitles: ${split.length} cues`);
+      }
+    }
 
     if (code === 0 && outputMode === "ass-highlight") {
       const wordsPerLine = options.wordsPerCue ?? 4;
