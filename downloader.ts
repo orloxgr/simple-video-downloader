@@ -1,6 +1,6 @@
 import { basename, dirname, join, parse, resolve } from "node:path";
 
-const APP_VERSION = "2.3.0";
+const APP_VERSION = "2.3.1";
 const APP_NAME = "Svid";
 const APP_TAGLINE = "Simple Video Download Cut and Convert";
 const APP_REPO = "orloxgr/simple-video-downloader";

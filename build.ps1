@@ -42,12 +42,7 @@ if (Test-Path $LegacyAppExe) {
 }
 
 & $Deno compile `
-  --allow-run `
-  --allow-read `
-  --allow-write `
-  --allow-net `
-  --allow-env `
-  --allow-sys `
+  --allow-all `
   --no-terminal `
   --app-name "SvidBackend" `
   --output $BackendExe `

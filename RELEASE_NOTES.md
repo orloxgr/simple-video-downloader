@@ -1,10 +1,12 @@
-# Svid v2.3.0
+# Svid v2.3.1
 
 Svid is a Windows app for downloading videos, cutting clips, converting media,
 and creating subtitles from a corrected text file.
 
 ## What's New
 
+- Fixed access to video/audio/text files on network shares such as
+  `\\server\share\file.mp4`.
 - Added subtitle alignment from video/audio plus a corrected TXT script.
 - Added subtitle output folders under `%USERPROFILE%\Videos\Svid\subtitles`.
 - Added `SRT` output for normal subtitles.
