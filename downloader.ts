@@ -1,6 +1,6 @@
 import { basename, dirname, join, parse, resolve } from "node:path";
 
-const APP_VERSION = "2.3.1";
+const APP_VERSION = "2.3.2";
 const APP_NAME = "Svid";
 const APP_TAGLINE = "Simple Video Download Cut and Convert";
 const APP_REPO = "orloxgr/simple-video-downloader";
@@ -1803,6 +1803,20 @@ function appendLog(job: Job, line: string) {
   const ansiEscape = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
   const normalized = line.replace(ansiEscape, "").trim();
   if (!normalized) return;
+
+  const hadOutOfMemoryHint = job.logs.some((item) =>
+    item.includes("Subtitle alignment ran out of memory.")
+  );
+  if (
+    !hadOutOfMemoryHint &&
+    !normalized.includes("Subtitle alignment ran out of memory.") &&
+    /mkl_malloc|failed to allocate memory|out of memory/i.test(normalized)
+  ) {
+    appendLog(
+      job,
+      "Subtitle alignment ran out of memory. Try Tiny or Base model, close other apps, or use a shorter clip.",
+    );
+  }
 
   job.latestLine = normalized;
   const percent = normalized.match(/(?:\[download\]\s*)?(\d+(?:\.\d+)?)%/i);
@@ -3938,6 +3952,13 @@ async function handleUiRequest(
             UV_TOOL_DIR: join(appDir, "uv-tools"),
             UV_PYTHON_INSTALL_DIR: join(appDir, "uv-python"),
             UV_LINK_MODE: "copy",
+            OMP_NUM_THREADS: "1",
+            MKL_NUM_THREADS: "1",
+            OPENBLAS_NUM_THREADS: "1",
+            NUMEXPR_NUM_THREADS: "1",
+            TOKENIZERS_PARALLELISM: "false",
+            HF_HUB_DISABLE_SYMLINKS_WARNING: "1",
+            MPLCONFIGDIR: join(appDir, "matplotlib-cache"),
           },
         });
       const settings = await loadSettings();
