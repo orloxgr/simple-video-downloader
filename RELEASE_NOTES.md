@@ -1,10 +1,12 @@
-# Svid v2.3.3
+# Svid v2.3.4
 
 Svid is a Windows app for downloading videos, cutting clips, converting media,
 and creating subtitles from a corrected text file.
 
 ## What's New
 
+- Improved UI/backend error reporting so failed job requests show the real
+  error instead of a generic `Request failed` message.
 - Changed SRT subtitle length handling so Svid aligns the original TXT first,
   then splits the final SRT into the selected number of words per subtitle.
   This avoids overloading alignment with hundreds of very short script lines.

@@ -9,7 +9,7 @@ namespace Svid.Setup;
 internal static class Program
 {
     private const string AppName = "Svid";
-    private const string AppVersion = "2.3.3";
+    private const string AppVersion = "2.3.4";
     private const string AppTagline = "Simple Video Download Cut and Convert";
     private const string Publisher = "Byron Iniotakis";
     private const string InstalledAppExeName = "Svid.exe";

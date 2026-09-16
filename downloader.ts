@@ -1,6 +1,6 @@
 import { basename, dirname, join, parse, resolve } from "node:path";
 
-const APP_VERSION = "2.3.3";
+const APP_VERSION = "2.3.4";
 const APP_NAME = "Svid";
 const APP_TAGLINE = "Simple Video Download Cut and Convert";
 const APP_REPO = "orloxgr/simple-video-downloader";
@@ -2286,9 +2286,17 @@ function _legacyWebUi(initialTargets: string[], port: number): string {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body)
       });
-      const payload = await response.json().catch(() => ({}));
+      const text = await response.text();
+      let payload = {};
+      if (text) {
+        try {
+          payload = JSON.parse(text);
+        } catch {
+          payload = { error: text };
+        }
+      }
       if (!response.ok) {
-        throw new Error(payload.error || "Request failed.");
+        throw new Error(payload.error || response.statusText || "Request failed.");
       }
       return payload;
     }
@@ -3291,9 +3299,17 @@ function webUi(initialTargets: string[]): string {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body)
       });
-      const payload = await response.json().catch(() => ({}));
+      const text = await response.text();
+      let payload = {};
+      if (text) {
+        try {
+          payload = JSON.parse(text);
+        } catch {
+          payload = { error: text };
+        }
+      }
       if (!response.ok) {
-        throw new Error(payload.error || "Request failed.");
+        throw new Error(payload.error || response.statusText || "Request failed.");
       }
       return payload;
     }
@@ -3981,7 +3997,16 @@ async function handleUiRequest(
   }
 
   if (request.method === "POST" && url.pathname === "/api/jobs") {
-    const body = await request.json();
+    let body: Record<string, unknown>;
+    try {
+      body = await request.json();
+    } catch (error) {
+      return json({
+        error: `Could not read job request: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      }, 400);
+    }
     const target = cleanInput(String(body.target ?? ""));
     const action = String(body.action ?? "");
 
@@ -4176,7 +4201,15 @@ async function startUi(
     hostname: "127.0.0.1",
     port: options.port ?? 0,
     onListen: () => {},
-  }, (request) => handleUiRequest(request, initialTargets));
+  }, async (request) => {
+    try {
+      return await handleUiRequest(request, initialTargets);
+    } catch (error) {
+      return json({
+        error: error instanceof Error ? error.message : String(error),
+      }, 500);
+    }
+  });
 
   const url = `http://127.0.0.1:${server.addr.port}`;
   console.log(`${APP_NAME} UI`);
