@@ -135,8 +135,8 @@ class BrowserDiscovery:
         self.control.check()
         self.playwright = sync_playwright().start()
         options = {"headless": True, "args": ["--autoplay-policy=no-user-gesture-required"]}
-        # Prefer the existing Windows Edge runtime; install Chromium if unavailable.
-        for channel in ("msedge", None):
+        # Prefer Windows Edge there; other platforms use headless Chromium.
+        for channel in (("msedge", None) if os.name == "nt" else (None,)):
             try:
                 self.browser = self.playwright.chromium.launch(**options, **({"channel": channel} if channel else {}))
                 break

@@ -1,5 +1,6 @@
 import { basename, dirname, join, parse, resolve } from "node:path";
 import { LiveManager, liveIsActive } from "./live.ts";
+import { macFfmpegRelease, platformDownloads, platformPaths } from "./platform.ts";
 
 const APP_VERSION = "2.4.0";
 const APP_NAME = "Svid";
@@ -7,15 +8,16 @@ const APP_TAGLINE = "Simple Video Download Cut and Convert";
 const APP_REPO = "orloxgr/simple-video-downloader";
 const APP_LATEST_RELEASE_API =
   `https://api.github.com/repos/${APP_REPO}/releases/latest`;
-const UV_DOWNLOAD_URL =
-  "https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip";
-
-const appDir = dirname(Deno.execPath());
+const executableDir = dirname(Deno.execPath());
 const isWindows = Deno.build.os === "windows";
-const userHome = Deno.env.get("USERPROFILE") ?? Deno.env.get("HOME") ?? appDir;
-const userDownloadsDir = join(userHome, "Downloads");
-const userVideosDir = join(userHome, "Videos");
-const svidVideosDir = join(userVideosDir, "Svid");
+const isMac = Deno.build.os === "darwin";
+const userHome = Deno.env.get("USERPROFILE") ?? Deno.env.get("HOME") ?? executableDir;
+const platformOS = isMac ? "darwin" : "windows";
+const paths = platformPaths(platformOS, userHome, executableDir);
+const downloads = platformDownloads(platformOS, Deno.build.arch);
+const appDir = paths.appDir;
+const userDownloadsDir = paths.downloads;
+const svidVideosDir = paths.videos;
 const exe = (name: string) => join(appDir, isWindows ? `${name}.exe` : name);
 const settingsFile = join(appDir, "settings.json");
 
@@ -444,6 +446,20 @@ async function browseWindowsFile(
   title = "Select file",
   filter = "All files (*.*)|*.*",
 ): Promise<string | null> {
+  if (isMac) {
+    const result = await capture("/usr/bin/osascript", [
+      "-e", "on run argv",
+      "-e", "try",
+      "-e", "return POSIX path of (choose file with prompt (item 1 of argv))",
+      "-e", "on error number -128",
+      "-e", 'return ""',
+      "-e", "end try",
+      "-e", "end run",
+      title,
+    ]);
+    if (result.code !== 0) throw new Error(result.stderr || "Could not open the file picker.");
+    return result.stdout.trim() || null;
+  }
   if (!isWindows) return null;
 
   const tempDir = await Deno.makeTempDir({ prefix: "svdc-picker-" });
@@ -573,11 +589,11 @@ async function latestSvidRelease(): Promise<SvidRelease> {
   const setup = assets.find((asset: unknown) => {
     if (!asset || typeof asset !== "object") return false;
     const name = "name" in asset ? String(asset.name) : "";
-    return name.toLowerCase() === "svid-setup.exe";
+    return name.toLowerCase() === downloads.releaseAsset.toLowerCase();
   }) as { browser_download_url?: string } | undefined;
 
   if (!setup?.browser_download_url) {
-    throw new Error("Latest GitHub release does not include Svid-Setup.exe.");
+    throw new Error(`Latest GitHub release does not include ${downloads.releaseAsset}.`);
   }
 
   const tagName = String(payload.tag_name ?? "");
@@ -627,6 +643,7 @@ async function checkSvidUpdate(
 
   return {
     checked: true,
+    manualInstall: isMac,
     currentVersion: APP_VERSION,
     latestVersion: release.version,
     tagName: release.tagName,
@@ -644,6 +661,12 @@ async function installLatestSvidUpdate(): Promise<Record<string, unknown>> {
       currentVersion: APP_VERSION,
       latestVersion: release.version,
     };
+  }
+
+  if (isMac) {
+    // Replacing a signed .app is a user action in the first macOS version.
+    await openAppWindow(release.setupUrl);
+    return { started: true, manualInstall: true, latestVersion: release.version };
   }
 
   const tempDir = await Deno.makeTempDir({ prefix: "svid-update-" });
@@ -718,7 +741,7 @@ async function ensureTool(
   try {
     if (name === "yt-dlp") {
       await downloadFile(
-        "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe",
+        downloads.ytDlp,
         file,
       );
     }
@@ -726,7 +749,7 @@ async function ensureTool(
     if (name === "deno") {
       const zip = join(appDir, "deno.zip");
       await downloadFile(
-        "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip",
+        downloads.deno,
         zip,
       );
       await extractZip(zip, appDir);
@@ -743,6 +766,7 @@ async function ensureTool(
   }
 
   if (await exists(file)) {
+    if (isMac) await Deno.chmod(file, 0o755);
     console.log(`[OK] ${basename(file)} downloaded successfully.`);
     console.log();
     return true;
@@ -811,6 +835,7 @@ async function updateTool(tool: ToolName, log: LogFn = console.log) {
 
 async function latestFfmpegVersion(): Promise<string | null> {
   try {
+    if (isMac) return (await latestMacFfmpeg()).version;
     const response = await fetch(
       "https://www.gyan.dev/ffmpeg/builds/release-version",
     );
@@ -829,6 +854,12 @@ async function currentFfmpegVersion(): Promise<string> {
   return match?.[1] ?? "";
 }
 
+async function latestMacFfmpeg() {
+  const response = await fetch("https://ffmpeg.martin-riedl.de/");
+  if (!response.ok) throw new Error(`FFmpeg release check failed: ${response.status}`);
+  return macFfmpegRelease(await response.text(), Deno.build.arch);
+}
+
 async function updateFfmpeg(log: LogFn = console.log) {
   const latest = await latestFfmpegVersion();
   if (!latest) {
@@ -839,7 +870,7 @@ async function updateFfmpeg(log: LogFn = console.log) {
   }
 
   const current = await currentFfmpegVersion();
-  if (current === latest) {
+  if (current === latest && await exists(exe("ffprobe"))) {
     log(`    ffmpeg already latest (${latest})`);
     return;
   }
@@ -853,6 +884,25 @@ async function updateFfmpeg(log: LogFn = console.log) {
 }
 
 async function downloadFfmpeg(log: LogFn = console.log) {
+  if (isMac) {
+    const release = await latestMacFfmpeg();
+    const temp = await Deno.makeTempDir({ prefix: "svid-ffmpeg-" });
+    try {
+      for (const name of ["ffmpeg", "ffprobe"] as const) {
+        log(`Downloading macOS ${name} ${release.version}...`);
+        const archive = join(temp, `${name}.zip`);
+        await downloadFile(release[name], archive);
+        await extractZip(archive, temp);
+        const source = join(temp, name);
+        await Deno.chmod(source, 0o755);
+        await Deno.copyFile(source, exe(name));
+        await Deno.chmod(exe(name), 0o755);
+      }
+    } finally {
+      await removePath(temp);
+    }
+    return;
+  }
   const zip = join(appDir, "ffmpeg.zip");
   const temp = join(appDir, "ffmpeg_temp");
 
@@ -884,25 +934,33 @@ async function ensureUv(log: LogFn = console.log): Promise<boolean> {
   if (await exists(uv)) return true;
 
   log("uv is missing. Downloading Python tool runner...");
-  const zip = join(appDir, "uv.zip");
+  const zip = join(appDir, isMac ? "uv.tar.gz" : "uv.zip");
   const temp = join(appDir, "uv_temp");
 
   try {
     await removePath(temp);
-    await downloadFile(UV_DOWNLOAD_URL, zip);
-    await extractZip(zip, temp);
+    await downloadFile(downloads.uv, zip);
+    if (isMac) {
+      await Deno.mkdir(temp, { recursive: true });
+      if (await run("/usr/bin/tar", ["-xzf", zip, "-C", temp]) !== 0) {
+        throw new Error("Could not extract the macOS Python tool runner.");
+      }
+    } else {
+      await extractZip(zip, temp);
+    }
 
     let found = false;
     for await (const file of walk(temp)) {
-      if (basename(file).toLowerCase() === "uv.exe") {
+      if (basename(file).toLowerCase() === (isMac ? "uv" : "uv.exe")) {
         await Deno.copyFile(file, uv);
+        if (isMac) await Deno.chmod(uv, 0o755);
         found = true;
         break;
       }
     }
 
     if (!found) {
-      log("uv.exe was not found in the downloaded archive.");
+      log("The Python tool runner was not found in the downloaded archive.");
       return false;
     }
 
@@ -1860,6 +1918,8 @@ const liveManager = new LiveManager({
 });
 let lastUiHeartbeat = Date.now();
 let toolsReadyPromise: Promise<boolean> | null = null;
+let requestUiShutdown: (() => void) | undefined;
+let uiIsClosing = false;
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -2545,7 +2605,9 @@ function _legacyWebUi(initialTargets: string[], port: number): string {
 </html>`;
 }
 
-function webUi(initialTargets: string[]): string {
+export function webUi(initialTargets: string[], platform = Deno.build.os): string {
+  const isMac = platform === "darwin";
+  const isWindows = platform === "windows";
   const initialJson = JSON.stringify(initialTargets);
 
   return `<!doctype html>
@@ -3217,6 +3279,7 @@ function webUi(initialTargets: string[]): string {
       </label>
       <div class="command-row">
         <button id="checkSvidUpdateBtn" class="secondary-btn">Check for Svid update</button>
+        ${isMac ? '<button id="quitSvidBtn" class="secondary-btn">Save recordings &amp; Quit Svid</button>' : ""}
       </div>
       <div id="svidUpdateStatus" class="status"></div>
       <div class="row">
@@ -3357,6 +3420,7 @@ function webUi(initialTargets: string[]): string {
     const pendingSection = document.querySelector("#pendingSection");
     const openLogs = new Set();
     let lastJobsPayload = "";
+    let appClosed = false;
 
     async function postJson(url, body) {
       const response = await fetch(url, {
@@ -3382,6 +3446,25 @@ function webUi(initialTargets: string[]): string {
     function escapeHtml(value) {
       return String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;")
         .replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
+    }
+
+    function pathFromDropText(text) {
+      const first = text.split(/\\r?\\n/).map(line => line.trim()).find(line => line && !line.startsWith("#"));
+      if (!first) return "";
+      try {
+        if (first.startsWith("file://")) {
+          let path = decodeURIComponent(new URL(first).pathname);
+          if (${isWindows}) {
+            if (/^\\/[A-Za-z]:\\//.test(path)) path = path.slice(1);
+            return path.replaceAll("/", "\\\\");
+          }
+          return path;
+        }
+      } catch {
+        return "";
+      }
+      if (${isMac} && first.startsWith("/")) return first;
+      return /^[A-Za-z]:\\\\/.test(first) ? first : "";
     }
 
     function localDateInput(date) {
@@ -3556,14 +3639,14 @@ function webUi(initialTargets: string[]): string {
         status.textContent = "Svid " + result.latestVersion + " is available.";
         if (scheduled) return;
 
-        if (!confirm("Svid " + result.latestVersion + " is available. Download and run the installer now?")) {
+        if (!confirm("Svid " + result.latestVersion + (result.manualInstall ? " is available. Download the Mac app now?" : " is available. Download and run the installer now?"))) {
           return;
         }
 
-        status.textContent = "Downloading Svid installer...";
+        status.textContent = result.manualInstall ? "Opening the Mac download..." : "Downloading Svid installer...";
         const install = await postJson("/api/svid-update/install", {});
         status.textContent = install.started
-          ? "Installer started. Follow the setup window."
+          ? (install.manualInstall ? "Download opened. Quit Svid, then replace Svid.app in Applications." : "Installer started. Follow the setup window.")
           : "Svid is up to date.";
       } catch (error) {
         if (!scheduled) status.textContent = error.message || String(error);
@@ -3572,6 +3655,21 @@ function webUi(initialTargets: string[]): string {
 
     document.querySelector("#checkSvidUpdateBtn").addEventListener("click", async () => {
       await checkSvidUpdate(false);
+    });
+
+    document.querySelector("#quitSvidBtn")?.addEventListener("click", async () => {
+      const button = document.querySelector("#quitSvidBtn");
+      button.disabled = true;
+      button.textContent = "Saving recordings...";
+      try {
+        await postJson("/api/shutdown", {});
+        appClosed = true;
+        document.body.innerHTML = '<main><section><h1>Svid closed</h1><p>Your recordings and schedules have been saved. You can close this browser tab.</p></section></main>';
+      } catch (error) {
+        button.disabled = false;
+        button.textContent = "Save recordings & Quit Svid";
+        document.querySelector("#svidUpdateStatus").textContent = error.message || String(error);
+      }
     });
 
     document.querySelectorAll("[data-open-folder]").forEach(button => {
@@ -3653,11 +3751,11 @@ function webUi(initialTargets: string[]): string {
             setCutStatus("Video selected. Set times, then press Cut Video.");
             return;
           }
-          setCutStatus("No file was received. Try dropping from Windows Explorer.");
+          setCutStatus("No file was received. Use Browse to select the video.");
           return;
         }
 
-        await browseCutFile("Windows hides paths from this drop. Pick the same video once.");
+        await browseCutFile("The browser hides the dropped path. Pick the same video once.");
       });
     }
 
@@ -3813,7 +3911,7 @@ function webUi(initialTargets: string[]): string {
           setSubtitleStatus("File selected.");
           return;
         }
-        await fallback("Windows hides paths from this drop. Pick the same file once.");
+        await fallback("The browser hides the dropped path. Pick the same file once.");
       });
     }
 
@@ -3883,11 +3981,11 @@ function webUi(initialTargets: string[]): string {
             setConvertStatus("File selected. Choose action, then press Start Convert.");
             return;
           }
-          setConvertStatus("No file was received. Try dropping from Windows Explorer.");
+          setConvertStatus("No file was received. Use Browse to select the file.");
           return;
         }
 
-        await browseConvertFile("Windows hides paths from this drop. Pick the same file once.");
+        await browseConvertFile("The browser hides the dropped path. Pick the same file once.");
       });
     }
 
@@ -3984,6 +4082,7 @@ function webUi(initialTargets: string[]): string {
     }
 
     async function refreshJobs() {
+      if (appClosed) return;
       const response = await fetch("/api/jobs");
       const payload = await response.text();
       if (payload === lastJobsPayload) return;
@@ -3993,6 +4092,7 @@ function webUi(initialTargets: string[]): string {
     }
 
     function heartbeat() {
+      if (appClosed) return;
       fetch("/api/heartbeat", { method: "POST" }).catch(() => {});
     }
 
@@ -4024,6 +4124,24 @@ async function handleUiRequest(
         "cache-control": "no-store",
       },
     });
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/session") {
+    return json({ app: APP_NAME, pid: Deno.pid });
+  }
+
+  if (isMac && request.method === "POST" && url.pathname === "/api/shutdown") {
+    if ([...jobs.values()].some((job) => ["queued", "running"].includes(job.status))) {
+      return json({ error: "Wait for the current download, conversion or subtitle job to finish before quitting." }, 409);
+    }
+    uiIsClosing = true;
+    await liveManager.shutdown();
+    requestUiShutdown?.();
+    return json({ ok: true });
+  }
+
+  if (uiIsClosing && request.method === "POST") {
+    return json({ error: "Svid is closing." }, 409);
   }
 
   if (request.method === "GET" && url.pathname === "/api/jobs") {
@@ -4130,6 +4248,10 @@ async function handleUiRequest(
         stdin: "null",
         stdout: "null",
         stderr: "null",
+      }).spawn().status;
+    } else if (isMac) {
+      await new Deno.Command("/usr/bin/open", {
+        args: [folder], stdin: "null", stdout: "null", stderr: "null",
       }).spawn().status;
     }
 
@@ -4350,6 +4472,23 @@ async function startUi(
   initialTargets: string[],
   options: { openBrowserWindow?: boolean; port?: number } = {},
 ) {
+  const sessionFile = join(appDir, "ui-session.json");
+  if (isMac) {
+    try {
+      const previous = JSON.parse(await Deno.readTextFile(sessionFile));
+      if (Number.isInteger(previous.port) && previous.port > 0 && previous.port <= 65535) {
+        const previousUrl = `http://127.0.0.1:${previous.port}`;
+        const response = await fetch(`${previousUrl}/api/session`, { signal: AbortSignal.timeout(1000) });
+        const session = await response.json();
+        if (session.app === APP_NAME && session.pid === previous.pid) {
+          if (options.openBrowserWindow !== false) await openAppWindow(previousUrl);
+          return;
+        }
+      }
+    } catch {
+      // The previous backend is closed; start a new one and restore its schedules.
+    }
+  }
   await liveManager.restore();
   lastUiHeartbeat = Date.now();
   const server = Deno.serve({
@@ -4367,6 +4506,12 @@ async function startUi(
   });
 
   const url = `http://127.0.0.1:${server.addr.port}`;
+  requestUiShutdown = () => {
+    setTimeout(() => server.shutdown().catch(() => {}), 150);
+  };
+  if (isMac) {
+    await Deno.writeTextFile(sessionFile, JSON.stringify({ port: server.addr.port, pid: Deno.pid }));
+  }
   console.log(`${APP_NAME} UI`);
   console.log(url);
   if (options.openBrowserWindow !== false) await openAppWindow(url);
@@ -4383,6 +4528,7 @@ async function startUi(
     await server.finished;
   } finally {
     clearInterval(shutdownTimer);
+    if (isMac) await Deno.remove(sessionFile).catch(() => {});
   }
 }
 
@@ -4452,6 +4598,7 @@ async function askMoreLoop() {
 }
 
 async function main() {
+  await Deno.mkdir(appDir, { recursive: true });
   Deno.chdir(appDir);
 
   if (Deno.args.includes("--version")) {
@@ -4472,7 +4619,7 @@ async function main() {
   }
 
   const consoleMode = Deno.args.includes("--console");
-  const targets = Deno.args.filter((arg) => !arg.startsWith("--"));
+  const targets = Deno.args.filter((arg) => !arg.startsWith("--") && !arg.startsWith("-psn_"));
   const requestedPort = Deno.args.find((arg) => arg.startsWith("--port="))
     ?.slice("--port=".length);
   const uiPort = requestedPort ? Number.parseInt(requestedPort, 10) : undefined;

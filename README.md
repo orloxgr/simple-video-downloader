@@ -3,10 +3,10 @@
 Simple Video Download Cut and Convert
 
 Svid helps you download videos, cut clips, and convert media files from one
-simple Windows app. It supports drag and drop, keeps downloads/cuts/converts/
+simple Windows app, with a browser-based macOS preview. It supports drag and drop, keeps downloads/cuts/converts/
 subtitles in separate folders, and includes a normal installer/uninstaller.
 
-It is powered by `yt-dlp`, `ffmpeg`, Deno, and Microsoft WebView2. You do not
+It is powered by `yt-dlp`, `ffmpeg`, Deno, and Microsoft WebView2 on Windows. You do not
 need to install these tools manually; Svid downloads or bundles what it needs.
 
 ## Features
@@ -28,6 +28,29 @@ need to install these tools manually; Svid downloads or bundles what it needs.
   and Deno.
 
 ## Download
+
+### macOS preview
+
+Mac packages can be built from Windows with `.\build-macos.ps1`:
+
+- `dist\Svid-macOS-arm64.zip` for Apple Silicon (M1 or newer).
+- `dist\Svid-macOS-x64.zip` for Intel.
+
+Requires macOS 14 or newer. Extract the ZIP, move `Svid.app` to Applications,
+then double-click it. The app opens the existing Svid interface in the default
+browser. It prepares its own tools on first use without Homebrew or a manual
+Python installation. These are cross-compiled preview builds, not yet verified
+on a real Mac and not signed with an Apple Developer ID or notarized. See the
+`START-HERE.txt` included in each ZIP for first-open instructions.
+
+On Mac, outputs use `~/Downloads` and `~/Movies/Svid`. Settings, schedules and
+downloaded tools are kept in `~/Library/Application Support/Svid`, separately
+from the app bundle. Use **Settings > Save recordings & Quit Svid** to save live
+recordings and exit; an active recording continues if you only close the
+browser tab. Opening Svid again reconnects to the current session. App updates
+download the matching Mac ZIP; quit and replace the app in Applications.
+
+### Windows
 
 Download the installer:
 
@@ -105,7 +128,7 @@ Developer checks (the Python HLS tests use the local FFmpeg/FFprobe tools):
 
 ```powershell
 .\deno.exe check downloader.ts live.ts
-.\deno.exe test --allow-read --allow-write live_test.ts
+.\deno.exe test --allow-read --allow-write platform_test.ts live_test.ts
 python -m unittest -v test_live_capture.py
 ```
 
@@ -140,6 +163,18 @@ Run:
 ```powershell
 .\build.ps1
 ```
+
+Mac builds (Windows PowerShell, Python 3 and Deno):
+
+```powershell
+.\build-macos.ps1
+# Or build one CPU only:
+.\build-macos.ps1 -Architecture arm64
+```
+
+The Mac packager preserves Unix executable permissions in the ZIP and includes
+the app icon, metadata, license and first-run instructions. The Windows build
+and installer remain separate.
 
 The portable build is created at:
 
