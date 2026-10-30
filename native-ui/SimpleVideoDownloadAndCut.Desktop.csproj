@@ -6,6 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>Svid</AssemblyName>
+    <Version>2.4.0</Version>
     <RootNamespace>Svid</RootNamespace>
     <ApplicationIcon>..\assets\app-icon.ico</ApplicationIcon>
     <MSBuildWarningsAsMessages>$(MSBuildWarningsAsMessages);MSB3277</MSBuildWarningsAsMessages>

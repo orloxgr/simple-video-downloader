@@ -12,6 +12,9 @@ need to install these tools manually; Svid downloads or bundles what it needs.
 ## Features
 
 - Download videos as MP4, MKV, MP3, or the original format.
+- Record live broadcasts from Diavlos ePresence, Hellas News, or a direct HLS URL.
+- Schedule live recordings by date/time, with automatic standby for late broadcasts,
+  optional stop time, and Stop & Save.
 - Cut local videos by choosing start and end times.
 - Convert local videos/audio with quality presets.
 - Create SRT or ASS word-highlight subtitles from a video/audio file and a
@@ -62,6 +65,48 @@ Downloads: %USERPROFILE%\Downloads
 Cuts:      %USERPROFILE%\Videos\Svid\cuts
 Converts:  %USERPROFILE%\Videos\Svid\converts
 Subtitles: %USERPROFILE%\Videos\Svid\subtitles
+Live:      %USERPROFILE%\Videos\Svid\live
+```
+
+## Live recording
+
+1. Open **Live** and paste a Diavlos ePresence event URL, a Hellas News live
+   page URL, or a direct `.m3u8` URL. The **Hellas News** button fills in the
+   Δήμος Δάφνης-Υμηττού channel (`position=8`).
+2. Choose a recording name, start date/time and MP4 or TS. Times use the
+   computer's local timezone, shown in the Live tab.
+3. Optionally set a stop date/time. Without it, recording continues until the
+   stream ends or you press **Stop & Save** in Jobs.
+4. Click **Schedule / Stand by**, or **Start Now / Stand by** for an immediate
+   check. If the stream is offline, Svid keeps checking until it appears or
+   the job is stopped. A delayed broadcast does not expire after 15 minutes.
+
+Keep Svid open and the computer awake and connected. Scheduling does not wake
+or turn on the computer. Waiting schedules are saved beside the app in
+`live-jobs.json` and resume when it reopens; an expired stop time cancels them.
+Closing the Windows app saves active recordings before exiting. Recordings
+interrupted by a crash are marked failed, with their saved parts left intact.
+
+Each recording has its own folder under the Live folder, with recoverable
+10-second TS parts in `segments` and the final `recording.mp4` or `recording.ts`.
+The exact part duration follows stream keyframes. If the source codecs cannot
+be remuxed to MP4, Svid saves a joined TS instead. FFmpeg diagnostics and all
+parts remain in the session folder. Settings lets you change the Live folder.
+
+The Diavlos AutoCapture workflow is integrated through `live_capture.py`:
+hidden-browser autoplay and HLS detection, retry while offline, recoverable
+parts and joining on stop. FFmpeg handles HLS variants and audio tracks.
+Hellas News players are resolved from the page and its nested Castr iframe,
+so channel URLs are refreshed instead of hardcoding a CDN stream address.
+Python/Playwright are installed automatically through `uv` on first use; the
+helper uses installed Edge or downloads headless Chromium when needed.
+
+Developer checks (the Python HLS tests use the local FFmpeg/FFprobe tools):
+
+```powershell
+.\deno.exe check downloader.ts live.ts
+.\deno.exe test --allow-read --allow-write live_test.ts
+python -m unittest -v test_live_capture.py
 ```
 
 ## Installer
@@ -116,5 +161,5 @@ already in `dist` are kept.
 After building, create a GitHub release with:
 
 ```powershell
-gh release create v2.3.4 dist\Svid-Setup.exe dist\Svid.exe --title "Svid v2.3.4" --notes-file RELEASE_NOTES.md
+gh release create v2.4.0 dist\Svid-Setup.exe dist\Svid.exe --title "Svid v2.4.0" --notes-file RELEASE_NOTES.md
 ```

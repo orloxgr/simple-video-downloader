@@ -131,6 +131,8 @@ internal sealed class MainForm : Form
     private readonly WebView2 webView = new();
     private readonly List<NativeFileDropTarget> dropTargets = [];
     private bool webViewReady;
+    private bool closingAfterLiveSave;
+    private bool liveSaveInProgress;
 
     public MainForm(BackendProcess backend)
     {
@@ -255,6 +257,41 @@ internal sealed class MainForm : Form
             .Where(File.Exists)
             .ToArray();
         return paths.Length > 0;
+    }
+
+    protected override async void OnFormClosing(FormClosingEventArgs e)
+    {
+        if (closingAfterLiveSave)
+        {
+            base.OnFormClosing(e);
+            return;
+        }
+
+        e.Cancel = true;
+        base.OnFormClosing(e);
+        if (liveSaveInProgress) return;
+        liveSaveInProgress = true;
+        Enabled = false;
+        Text = "Svid - Saving live recordings...";
+        try
+        {
+            using var client = new HttpClient
+            {
+                BaseAddress = backend.BaseUri,
+                Timeout = TimeSpan.FromMinutes(3),
+            };
+            using var response = await client.PostAsync("/api/live/shutdown", null);
+            response.EnsureSuccessStatusCode();
+        }
+        catch (Exception error)
+        {
+            Debug.WriteLine($"Live shutdown: {error.Message}");
+        }
+        finally
+        {
+            closingAfterLiveSave = true;
+            Close();
+        }
     }
 
     protected override void Dispose(bool disposing)

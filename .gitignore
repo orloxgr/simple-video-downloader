@@ -28,6 +28,12 @@
 /cuts/
 /converts/
 /uploads/
+/live/
+/live-runtime/
+/live-control/
+/live-jobs.json
+/live-jobs.json.tmp
+__pycache__/
 /list.txt
 
 # Legacy local launcher

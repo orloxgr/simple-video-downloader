@@ -44,9 +44,12 @@ if (Test-Path $LegacyAppExe) {
 & $Deno compile `
   --allow-all `
   --no-terminal `
+  --include (Join-Path $Root "live_capture.py") `
   --app-name "SvidBackend" `
   --output $BackendExe `
   (Join-Path $Root "downloader.ts")
+
+if ($LASTEXITCODE -ne 0) { throw "Backend compilation failed." }
 
 dotnet publish $DesktopProject `
   -c Release `
@@ -60,10 +63,17 @@ dotnet publish $DesktopProject `
   -p:DebugSymbols=false `
   -p:PublishDir="$OutDir\"
 
+if ($LASTEXITCODE -ne 0) { throw "Desktop build failed." }
+
 Get-ChildItem -Path $OutDir -Filter "Microsoft.Web.WebView2.*.xml" -File -ErrorAction SilentlyContinue |
   Remove-Item -Force
 
 if (Test-Path $InstallerPublishDir) {
+  $ResolvedInstallerPublishDir = [IO.Path]::GetFullPath($InstallerPublishDir)
+  $ResolvedBuildPrefix = [IO.Path]::GetFullPath($BuildDir) + [IO.Path]::DirectorySeparatorChar
+  if (-not $ResolvedInstallerPublishDir.StartsWith($ResolvedBuildPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Installer publish cleanup must stay inside the build directory."
+  }
   Remove-Item -Recurse -Force $InstallerPublishDir
 }
 
@@ -78,6 +88,8 @@ dotnet publish $InstallerProject `
   -p:DebugType=none `
   -p:DebugSymbols=false `
   -p:PublishDir="$InstallerPublishDir\"
+
+if ($LASTEXITCODE -ne 0) { throw "Installer build failed." }
 
 $PublishedSetupExe = Join-Path $InstallerPublishDir "SvidSetup.exe"
 Copy-Item -Force $PublishedSetupExe $SetupExe

@@ -1,6 +1,7 @@
 import { basename, dirname, join, parse, resolve } from "node:path";
+import { LiveManager, liveIsActive } from "./live.ts";
 
-const APP_VERSION = "2.3.4";
+const APP_VERSION = "2.4.0";
 const APP_NAME = "Svid";
 const APP_TAGLINE = "Simple Video Download Cut and Convert";
 const APP_REPO = "orloxgr/simple-video-downloader";
@@ -46,6 +47,7 @@ type AppSettings = {
     cuts: string;
     converts: string;
     subtitles: string;
+    live: string;
   };
 };
 
@@ -70,6 +72,7 @@ const defaultSettings: AppSettings = {
     cuts: join(svidVideosDir, "cuts"),
     converts: join(svidVideosDir, "converts"),
     subtitles: join(svidVideosDir, "subtitles"),
+    live: join(svidVideosDir, "live"),
   },
 };
 
@@ -78,6 +81,7 @@ const legacyDefaultOutputDirs: AppSettings["outputDirs"] = {
   cuts: join(appDir, "cuts"),
   converts: join(appDir, "converts"),
   subtitles: join(appDir, "subtitles"),
+  live: join(appDir, "live"),
 };
 
 function toolEnv(): Record<string, string> {
@@ -122,7 +126,7 @@ function normalizeSettings(raw: unknown): AppSettings {
   }
 
   for (
-    const key of ["downloads", "cuts", "converts", "subtitles"] as const
+    const key of ["downloads", "cuts", "converts", "subtitles", "live"] as const
   ) {
     const value = source.outputDirs?.[key];
     if (typeof value === "string" && value.trim()) {
@@ -249,7 +253,7 @@ async function runWindowsHidden(
       powershellString(outFile)
     } -RedirectStandardError ${powershellString(errFile)} -Wait -PassThru`,
     "$p.Refresh()",
-    "if ($null -ne $p.ExitCode -and $p.ExitCode -eq 0) { exit 0 }",
+    "if ($null -ne $p.ExitCode) { exit $p.ExitCode }",
     "exit 1",
   ].join("\r\n");
   const encoded = base64Utf16Le(psScript);
@@ -879,7 +883,7 @@ async function ensureUv(log: LogFn = console.log): Promise<boolean> {
   const uv = exe("uv");
   if (await exists(uv)) return true;
 
-  log("uv is missing. Downloading subtitle tool runner...");
+  log("uv is missing. Downloading Python tool runner...");
   const zip = join(appDir, "uv.zip");
   const temp = join(appDir, "uv_temp");
 
@@ -1836,6 +1840,24 @@ type Job = {
 };
 
 const jobs = new Map<string, Job>();
+const liveManager = new LiveManager({
+  stateDir: appDir,
+  prepare: async (log) => {
+    if (!(await ensureUv(log))) throw new Error("Could not install the live capture runner.");
+    if (!(await ensureTool("ffmpeg"))) throw new Error("Could not install FFmpeg for live capture.");
+    const runtime = join(appDir, "live-runtime");
+    await Deno.mkdir(runtime, { recursive: true });
+    await Deno.writeTextFile(
+      join(runtime, "live_capture.py"),
+      await Deno.readTextFile(new URL("./live_capture.py", import.meta.url)),
+    );
+  },
+  launch: (config, log) => runLogged(exe("uv"), [
+    "run", "--no-project", "--python", "3.12", "--with", "playwright>=1.49,<2",
+    "python", "-u", join(appDir, "live-runtime", "live_capture.py"),
+    "--config", config, "--ffmpeg", exe("ffmpeg"),
+  ], log, { env: { PYTHONIOENCODING: "utf-8" } }),
+});
 let lastUiHeartbeat = Date.now();
 let toolsReadyPromise: Promise<boolean> | null = null;
 
@@ -1914,7 +1936,7 @@ function appendLog(job: Job, line: string) {
 }
 
 function hasActiveJobs(): boolean {
-  return [...jobs.values()].some((job) =>
+  return [...liveManager.jobs.values()].some(liveIsActive) || [...jobs.values()].some((job) =>
     job.status === "queued" || job.status === "running"
   );
 }
@@ -2592,7 +2614,7 @@ function webUi(initialTargets: string[]): string {
     }
     .tabs {
       display: grid;
-      grid-template-columns: repeat(5, 1fr);
+      grid-template-columns: repeat(6, 1fr);
       gap: 7px;
       padding: 6px;
       border: 1px solid var(--line);
@@ -2877,6 +2899,9 @@ function webUi(initialTargets: string[]): string {
     .badge.running { background: #7b2331; }
     .badge.done { background: #3f6b42; }
     .badge.failed { background: #9f3543; }
+    .badge.scheduled, .badge.preparing, .badge.standby { background: #66501e; }
+    .badge.recording { background: #a12b3d; }
+    .badge.stopping, .badge.cancelled { background: #555; }
     .job-progress {
       display: grid;
       gap: 6px;
@@ -2962,6 +2987,7 @@ function webUi(initialTargets: string[]): string {
   <main>
     <nav class="tabs" aria-label="Tools">
       <button class="tab-btn active" data-tab="download">Download</button>
+      <button class="tab-btn" data-tab="live">Live</button>
       <button class="tab-btn" data-tab="cut">Cut</button>
       <button class="tab-btn" data-tab="convert">Convert</button>
       <button class="tab-btn" data-tab="subtitles">Subtitles</button>
@@ -2985,6 +3011,42 @@ function webUi(initialTargets: string[]): string {
         <button id="downloadBtn">Start Download</button>
         <button class="secondary-btn" data-open-folder="downloads">Open Folder</button>
       </div>
+    </section>
+
+    <section id="live" class="tab-panel">
+      <h2>Live recording</h2>
+      <label>Live page or HLS URL
+        <input id="liveUrl" type="url" placeholder="Diavlos event, Hellas News live page or .m3u8" autocomplete="off">
+      </label>
+      <div class="command-row">
+        <button id="hellasLiveBtn" class="secondary-btn">Hellas News · Δήμος Δάφνης-Υμηττού</button>
+      </div>
+      <label>Recording name (optional)
+        <input id="liveTitle" maxlength="120" placeholder="Council meeting" autocomplete="off">
+      </label>
+      <div class="row">
+        <label>Start date &amp; time
+          <input id="liveStart" type="datetime-local" step="60">
+        </label>
+        <label>Stop date &amp; time (optional)
+          <input id="liveEnd" type="datetime-local" step="60">
+        </label>
+      </div>
+      <label>Output format
+        <select id="liveFormat">
+          <option value="mp4">MP4</option>
+          <option value="ts">TS</option>
+        </select>
+      </label>
+      <p class="status" id="liveTimezone"></p>
+      <p class="status">At the scheduled time Svid waits for the live stream and starts recording automatically, even if the broadcast is late. Leave the stop time blank to record until the stream ends or you press Stop &amp; Save.</p>
+      <p class="status">Keep Svid open and your computer awake. Saved schedules resume when Svid reopens. First use may download Python and browser tools. Recording parts are kept in the Live folder.</p>
+      <div class="command-row">
+        <button id="scheduleLiveBtn">Schedule / Stand by</button>
+        <button id="startLiveBtn" class="secondary-btn">Start Now / Stand by</button>
+        <button class="secondary-btn" data-open-folder="live">Open Live Folder</button>
+      </div>
+      <div id="liveStatus" class="status" role="status"></div>
     </section>
 
     <section id="cut" class="tab-panel">
@@ -3201,6 +3263,9 @@ function webUi(initialTargets: string[]): string {
       <label>Subtitles folder
         <input id="subtitlesDir" autocomplete="off">
       </label>
+      <label>Live recordings folder
+        <input id="liveDir" autocomplete="off">
+      </label>
       <button id="saveSettingsBtn">Save Settings</button>
       <div id="settingsStatus" class="status"></div>
       <div class="support-box">
@@ -3314,6 +3379,51 @@ function webUi(initialTargets: string[]): string {
       return payload;
     }
 
+    function escapeHtml(value) {
+      return String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
+    }
+
+    function localDateInput(date) {
+      const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+      return local.toISOString().slice(0, 16);
+    }
+
+    document.querySelector("#liveStart").value = localDateInput(new Date(Date.now() + 5 * 60000));
+    document.querySelector("#liveTimezone").textContent = "Dates and times use your computer timezone: " +
+      Intl.DateTimeFormat().resolvedOptions().timeZone + ".";
+    document.querySelector("#hellasLiveBtn").addEventListener("click", () => {
+      document.querySelector("#liveUrl").value = "https://www.hellasnews.tv/live/?position=8&showheader=1&showfooter=1";
+      document.querySelector("#liveTitle").value = "Δημοτικό Συμβούλιο Δάφνης-Υμηττού";
+    });
+
+    async function scheduleLive(now) {
+      const status = document.querySelector("#liveStatus");
+      const buttons = [document.querySelector("#scheduleLiveBtn"), document.querySelector("#startLiveBtn")];
+      try {
+        const target = document.querySelector("#liveUrl").value.trim();
+        const start = document.querySelector("#liveStart").value;
+        const end = document.querySelector("#liveEnd").value;
+        if (!target) throw new Error("Paste a live page URL first.");
+        if (!now && !start) throw new Error("Choose a start date and time.");
+        buttons.forEach(button => { button.disabled = true; });
+        await postJson("/api/live", {
+          target, title: document.querySelector("#liveTitle").value,
+          startAt: now ? undefined : new Date(start).toISOString(),
+          stopAt: end ? new Date(end).toISOString() : undefined,
+          format: document.querySelector("#liveFormat").value
+        });
+        status.textContent = "Live recording added. Follow its status below in Jobs; use Stop & Save to finish.";
+        await refreshJobs();
+      } catch (error) {
+        status.textContent = error.message || String(error);
+      } finally {
+        buttons.forEach(button => { button.disabled = false; });
+      }
+    }
+    document.querySelector("#scheduleLiveBtn").addEventListener("click", () => scheduleLive(false));
+    document.querySelector("#startLiveBtn").addEventListener("click", () => scheduleLive(true));
+
     function numberValue(id, fallback = 0) {
       const input = document.querySelector("#" + id);
       const value = Number(input.value);
@@ -3408,6 +3518,7 @@ function webUi(initialTargets: string[]): string {
       document.querySelector("#cutsDir").value = settings.outputDirs.cuts;
       document.querySelector("#convertsDir").value = settings.outputDirs.converts;
       document.querySelector("#subtitlesDir").value = settings.outputDirs.subtitles;
+      document.querySelector("#liveDir").value = settings.outputDirs.live;
     }
 
     document.querySelector("#saveSettingsBtn").addEventListener("click", async () => {
@@ -3423,7 +3534,8 @@ function webUi(initialTargets: string[]): string {
           downloads: document.querySelector("#downloadsDir").value,
           cuts: document.querySelector("#cutsDir").value,
           converts: document.querySelector("#convertsDir").value,
-          subtitles: document.querySelector("#subtitlesDir").value
+          subtitles: document.querySelector("#subtitlesDir").value,
+          live: document.querySelector("#liveDir").value
         }
       });
       status.textContent = "Saved.";
@@ -3826,19 +3938,21 @@ function webUi(initialTargets: string[]): string {
         el.className = "job";
         const hasProgress = typeof job.progress === "number";
         const progress = hasProgress ? Math.max(0, Math.min(100, job.progress)) : 0;
-        const indeterminate = job.status === "running" && !hasProgress;
+        const activeLive = job.kind === "live" && !["done", "failed", "cancelled"].includes(job.status);
+        const indeterminate = ["running", "preparing", "standby", "recording", "stopping"].includes(job.status) && !hasProgress;
         const latest = job.latestLine || (indeterminate ? "Working..." : "Waiting...");
         el.innerHTML = \`
           <div class="job-head">
-            <div class="path" title="\${job.title.replaceAll('"', "&quot;")}">\${job.title}</div>
+            <div class="path" title="\${escapeHtml(job.title)}">\${escapeHtml(job.title)}</div>
             <div class="badge \${job.status}">\${job.status}</div>
           </div>
           <div class="job-progress">
             <div class="progress-track"><div class="progress-fill \${indeterminate ? "indeterminate" : ""}" style="\${indeterminate ? "" : "width:" + progress + "%"}"></div></div>
-            <div class="latest-line" title="\${latest.replaceAll('"', "&quot;")}">\${latest}</div>
+            <div class="latest-line" title="\${escapeHtml(latest)}">\${escapeHtml(latest)}</div>
           </div>
           <button class="log-toggle" data-job-id="\${job.id}">\${openLogs.has(job.id) ? "Hide Logs" : "Show Logs"}</button>
-          <pre \${openLogs.has(job.id) ? "" : "hidden"}>\${job.logs.join("\\n")}</pre>
+          \${activeLive ? '<button class="log-toggle live-stop"' + (job.status === "stopping" ? ' disabled' : '') + '>' + (job.status === "stopping" ? 'Saving...' : 'Stop &amp; Save') + '</button>' : ''}
+          <pre \${openLogs.has(job.id) ? "" : "hidden"}>\${escapeHtml(job.logs.join("\\n"))}</pre>
         \`;
         jobsEl.append(el);
         const toggle = el.querySelector(".log-toggle");
@@ -3850,6 +3964,17 @@ function webUi(initialTargets: string[]): string {
           }
           lastJobsPayload = "";
           refreshJobs();
+        });
+        const stop = el.querySelector(".live-stop");
+        if (stop) stop.addEventListener("click", async () => {
+          stop.disabled = true;
+          try {
+            await postJson("/api/live/stop", { id: job.id });
+            await refreshJobs();
+          } catch (error) {
+            document.querySelector("#liveStatus").textContent = error.message || String(error);
+            stop.disabled = false;
+          }
         });
         const log = el.querySelector("pre");
         if (job.status === "running" && openLogs.has(job.id)) {
@@ -3887,6 +4012,10 @@ async function handleUiRequest(
   initialTargets: string[],
 ): Promise<Response> {
   const url = new URL(request.url);
+  const origin = request.headers.get("origin");
+  if (request.method === "POST" && origin && origin !== url.origin) {
+    return json({ error: "Cross-origin requests are not allowed." }, 403);
+  }
 
   if (request.method === "GET" && url.pathname === "/") {
     return new Response(webUi(initialTargets), {
@@ -3898,10 +4027,35 @@ async function handleUiRequest(
   }
 
   if (request.method === "GET" && url.pathname === "/api/jobs") {
-    const allJobs = [...jobs.values()].sort((a, b) =>
+    const allJobs = [...jobs.values(), ...liveManager.jobs.values()].sort((a, b) =>
       b.createdAt - a.createdAt
     );
     return json({ jobs: allJobs });
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/live") {
+    try {
+      const body = await request.json();
+      if (!body || typeof body !== "object" || Array.isArray(body)) {
+        return json({ error: "Invalid live recording request." }, 400);
+      }
+      const settings = await loadSettings();
+      const job = await liveManager.create(body, settings.outputDirs.live);
+      return json({ jobId: job.id });
+    } catch (error) {
+      return json({ error: error instanceof Error ? error.message : String(error) }, 400);
+    }
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/live/stop") {
+    const body = await request.json();
+    const job = await liveManager.stop(String(body.id ?? ""));
+    return job ? json({ ok: true }) : json({ error: "Live recording not found." }, 404);
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/live/shutdown") {
+    await liveManager.shutdown();
+    return json({ ok: true });
   }
 
   if (request.method === "GET" && url.pathname === "/api/settings") {
@@ -3920,7 +4074,7 @@ async function handleUiRequest(
     }
 
     for (
-      const key of ["downloads", "cuts", "converts", "subtitles"] as const
+      const key of ["downloads", "cuts", "converts", "subtitles", "live"] as const
     ) {
       const value = body.outputDirs?.[key];
       if (typeof value === "string" && value.trim()) {
@@ -3961,7 +4115,7 @@ async function handleUiRequest(
     const key = String(body.key ?? "");
     if (
       key !== "downloads" && key !== "cuts" && key !== "converts" &&
-      key !== "subtitles"
+      key !== "subtitles" && key !== "live"
     ) {
       return json({ error: "Invalid folder key." }, 400);
     }
@@ -4196,6 +4350,7 @@ async function startUi(
   initialTargets: string[],
   options: { openBrowserWindow?: boolean; port?: number } = {},
 ) {
+  await liveManager.restore();
   lastUiHeartbeat = Date.now();
   const server = Deno.serve({
     hostname: "127.0.0.1",

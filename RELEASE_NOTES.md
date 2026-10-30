@@ -1,9 +1,25 @@
-# Svid v2.3.4
+# Svid v2.4.0
 
 Svid is a Windows app for downloading videos, cutting clips, converting media,
 and creating subtitles from a corrected text file.
 
 ## What's New
+
+- Integrated Diavlos live capture and Hellas News/Castr live recording.
+- Added a Live tab with date/time scheduling, offline standby, optional stop
+  date/time, MP4/TS output and Stop & Save controls in Jobs.
+- Added a shortcut for the Hellas News Δήμος Δάφνης-Υμηττού channel.
+- Saved waiting schedules resume when Svid reopens. Keep Svid open and the PC
+  awake for recording at the scheduled time.
+- Closing Svid gracefully saves active recordings and retains pending schedules.
+- Live recordings keep recoverable TS parts and FFmpeg diagnostics in their
+  own folders. If MP4 remux fails, the joined TS is retained instead.
+- Added a configurable Live folder, defaulting to
+  `%USERPROFILE%\Videos\Svid\live`.
+- Live capture prepares Python/Playwright automatically on first use and
+  discovers the stream from the current page and embedded player.
+
+## Previous improvements
 
 - Improved UI/backend error reporting so failed job requests show the real
   error instead of a generic `Request failed` message.
