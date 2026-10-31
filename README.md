@@ -21,7 +21,11 @@ need to install these tools manually; Svid downloads or bundles what it needs.
   corrected TXT script.
 - Drag and drop files into Cut and Convert.
 - Separate folders for downloads, cuts, converts, and subtitles.
-- Open output folders from inside the app.
+- Choose a destination for each download, cut, conversion, or subtitle job.
+- Save cuts, conversions, and subtitles beside the input file with
+  `Same as input folder`.
+- Open the result folder beside `done` in Jobs.
+- Cuts, conversions, and subtitles include a date-time stamp in their filenames.
 - Hide/show logs when needed.
 - Check for Svid updates from Settings and run the installer.
 - Configure update check frequency separately for Svid, `yt-dlp`, `ffmpeg`,
@@ -196,5 +200,5 @@ already in `dist` are kept.
 After building, create a GitHub release with:
 
 ```powershell
-gh release create v2.4.0 dist\Svid-Setup.exe dist\Svid.exe --title "Svid v2.4.0" --notes-file RELEASE_NOTES.md
+gh release create v2.4.1 dist\Svid-Setup.exe dist\Svid.exe dist\Svid-macOS-arm64.zip --title "Svid v2.4.1" --notes-file RELEASE_NOTES.md
 ```

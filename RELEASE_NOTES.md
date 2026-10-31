@@ -1,9 +1,21 @@
-# Svid v2.4.0
+# Svid v2.4.1
 
 Svid is a Windows app for downloading videos, cutting clips, converting media,
 and creating subtitles from a corrected text file.
 
 ## What's New
+
+- Added `Open Folder` beside `done` for each completed job. It opens that
+  job's destination, even after output settings have changed.
+- Added an output folder and folder picker to Cut, Convert, and Subtitles,
+  with a `Same as input folder` checkbox.
+- Added a per-download destination directory.
+- Cut, conversion, and subtitle filenames now include a date-time stamp with
+  milliseconds.
+- Includes the updated macOS Apple Silicon preview ZIP. The Mac build is
+  cross-compiled, not yet verified on a physical Mac, and unsigned.
+
+## Live Recording
 
 - Integrated Diavlos live capture and Hellas News/Castr live recording.
 - Added a Live tab with date/time scheduling, offline standby, optional stop
@@ -67,3 +79,4 @@ and creating subtitles from a corrected text file.
 
 - `Svid-Setup.exe`: installer.
 - `Svid.exe`: portable app.
+- `Svid-macOS-arm64.zip`: macOS 14+ Apple Silicon preview (M1 or newer).

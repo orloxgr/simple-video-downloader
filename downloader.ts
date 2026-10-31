@@ -2,7 +2,7 @@ import { basename, dirname, join, parse, resolve } from "node:path";
 import { LiveManager, liveIsActive } from "./live.ts";
 import { macFfmpegRelease, platformDownloads, platformPaths } from "./platform.ts";
 
-const APP_VERSION = "2.4.0";
+const APP_VERSION = "2.4.1";
 const APP_NAME = "Svid";
 const APP_TAGLINE = "Simple Video Download Cut and Convert";
 const APP_REPO = "orloxgr/simple-video-downloader";
@@ -445,12 +445,14 @@ async function capture(
 async function browseWindowsFile(
   title = "Select file",
   filter = "All files (*.*)|*.*",
+  folder = false,
+  initialPath = "",
 ): Promise<string | null> {
   if (isMac) {
     const result = await capture("/usr/bin/osascript", [
       "-e", "on run argv",
       "-e", "try",
-      "-e", "return POSIX path of (choose file with prompt (item 1 of argv))",
+      "-e", `return POSIX path of (choose ${folder ? "folder" : "file"} with prompt (item 1 of argv))`,
       "-e", "on error number -128",
       "-e", 'return ""',
       "-e", "end try",
@@ -469,14 +471,22 @@ async function browseWindowsFile(
     const psScript = [
       "$ErrorActionPreference = 'Stop'",
       "Add-Type -AssemblyName System.Windows.Forms",
-      "$dialog = New-Object System.Windows.Forms.OpenFileDialog",
-      `$dialog.Title = ${powershellString(title)}`,
-      `$dialog.Filter = ${powershellString(filter)}`,
-      "$dialog.Multiselect = $false",
+      ...(folder
+        ? [
+          "$dialog = New-Object System.Windows.Forms.FolderBrowserDialog",
+          `$dialog.Description = ${powershellString(title)}`,
+          `$dialog.SelectedPath = ${powershellString(initialPath)}`,
+        ]
+        : [
+          "$dialog = New-Object System.Windows.Forms.OpenFileDialog",
+          `$dialog.Title = ${powershellString(title)}`,
+          `$dialog.Filter = ${powershellString(filter)}`,
+          "$dialog.Multiselect = $false",
+        ]),
       "if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {",
       `  [System.IO.File]::WriteAllText(${
         powershellString(resultFile)
-      }, $dialog.FileName, [System.Text.UTF8Encoding]::new($false))`,
+      }, $dialog.${folder ? "SelectedPath" : "FileName"}, [System.Text.UTF8Encoding]::new($false))`,
       "}",
     ].join("\r\n");
     const encoded = base64Utf16Le(psScript);
@@ -1027,13 +1037,6 @@ function parseTime(value: string): number | null {
   return hours * 3600 + minutes * 60 + seconds;
 }
 
-function timeTag(value: number): string {
-  return value.toFixed(6).replace(/0+$/, "").replace(/\.$/, "").replace(
-    ".",
-    "_",
-  );
-}
-
 function convertQuality(value: unknown): ConvertQuality {
   return value === "high" || value === "balanced" || value === "small"
     ? value
@@ -1144,7 +1147,7 @@ async function cutLocalVideoRange(
   options: ProcessOptions = {},
 ): Promise<number> {
   const duration = end - start;
-  const output = `${outputBase}_cut_${timeTag(start)}-${timeTag(end)}.mp4`;
+  const output = `${outputBase}-cut${fileTimestamp()}.mp4`;
   const runner = options.runner ?? run;
   const log = options.log ?? console.log;
 
@@ -1231,7 +1234,10 @@ async function processLocalFile(
   const parsed = parse(resolve(target));
   const outputDir = options.outputDir ?? parsed.dir;
   await Deno.mkdir(outputDir, { recursive: true });
-  const outputBase = join(outputDir, parsed.name);
+  const outputBase = join(
+    outputDir,
+    choice === "cut" ? parsed.name : `${parsed.name}-convert${fileTimestamp()}`,
+  );
   const quality = convertQuality(options.quality);
 
   if (choice === "audio") {
@@ -1411,13 +1417,28 @@ function cleanHexColor(value: unknown, fallback: string): string {
   return /^#[0-9a-f]{6}$/i.test(raw) ? raw.toUpperCase() : fallback;
 }
 
-function fileTimestamp(date = new Date()): string {
+export function fileTimestamp(date = new Date()): string {
   const part = (value: number, size = 2) => String(value).padStart(size, "0");
   return `${date.getFullYear()}${part(date.getMonth() + 1)}${
     part(date.getDate())
   }-${part(date.getHours())}${part(date.getMinutes())}${
     part(date.getSeconds())
-  }`;
+  }-${part(date.getMilliseconds(), 3)}`;
+}
+
+export function resolveJobOutputDir(
+  body: Record<string, unknown>,
+  fallback: string,
+  inputPath?: string,
+): string {
+  if (body.sameAsInput === true) {
+    if (!inputPath) throw new Error("Choose an input file first.");
+    return dirname(resolve(inputPath));
+  }
+  const custom = typeof body.outputDir === "string"
+    ? cleanInput(body.outputDir)
+    : "";
+  return resolve(custom || fallback);
 }
 
 async function prepareSubtitleScript(
@@ -1693,8 +1714,8 @@ async function processSubtitleAlignment(
   const output = join(
     outputDir,
     outputMode === "ass-highlight"
-      ? `${parsed.name}_highlight_${stamp}.ass`
-      : `${parsed.name}_aligned_${stamp}.srt`,
+      ? `${parsed.name}-subtitles${stamp}_highlight.ass`
+      : `${parsed.name}-subtitles${stamp}.srt`,
   );
 
   log("Subtitle alignment");
@@ -1895,6 +1916,7 @@ type Job = {
   progress: number | null;
   createdAt: number;
   finishedAt?: number;
+  outputDir?: string;
 };
 
 const jobs = new Map<string, Job>();
@@ -2609,6 +2631,14 @@ export function webUi(initialTargets: string[], platform = Deno.build.os): strin
   const isMac = platform === "darwin";
   const isWindows = platform === "windows";
   const initialJson = JSON.stringify(initialTargets);
+  const outputFolderFields = (prefix: string, label: string, sameAsInput = false) => `
+      <label>${label}
+        <div class="path-input-row">
+          <input id="${prefix}OutputDir" autocomplete="off">
+          <button class="secondary-btn" type="button" data-browse-folder="${prefix}">Browse</button>
+        </div>
+      </label>
+      ${sameAsInput ? `<label class="checkbox-row"><input id="${prefix}SameAsInput" type="checkbox">Same as input folder</label>` : ""}`;
 
   return `<!doctype html>
 <html lang="en">
@@ -2854,6 +2884,27 @@ export function webUi(initialTargets: string[], platform = Deno.build.os): strin
     .path-input-row button {
       min-width: 86px;
     }
+    .checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+    .checkbox-row input {
+      width: 16px;
+      height: 16px;
+      min-height: 0;
+      margin: 0;
+      accent-color: var(--accent-2);
+    }
+    input:disabled { opacity: .6; }
+    .job-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .job-open-folder { min-height: 30px; padding: 4px 8px; font-size: 12px; }
     .time-box {
       display: grid;
       gap: 7px;
@@ -3069,10 +3120,11 @@ export function webUi(initialTargets: string[], platform = Deno.build.os): strin
           <option value="native">Native source</option>
         </select>
       </label>
+      ${outputFolderFields("download", "Download directory")}
       <div class="command-row">
         <button id="downloadBtn">Start Download</button>
-        <button class="secondary-btn" data-open-folder="downloads">Open Folder</button>
       </div>
+      <div id="downloadStatus" class="status error"></div>
     </section>
 
     <section id="live" class="tab-panel">
@@ -3142,9 +3194,9 @@ export function webUi(initialTargets: string[], platform = Deno.build.os): strin
           </div>
         </div>
       </div>
+      ${outputFolderFields("cut", "Output folder", true)}
       <div class="command-row">
         <button id="cutBtn">Cut Video</button>
-        <button class="secondary-btn" data-open-folder="cuts">Open Folder</button>
       </div>
       <div id="cutStatus" class="status error"></div>
     </section>
@@ -3175,9 +3227,9 @@ export function webUi(initialTargets: string[], platform = Deno.build.os): strin
           <option value="small">Small file</option>
         </select>
       </label>
+      ${outputFolderFields("convert", "Output folder", true)}
       <div class="command-row">
         <button id="convertBtn">Start Convert</button>
-        <button class="secondary-btn" data-open-folder="converts">Open Folder</button>
       </div>
       <div id="convertStatus" class="status error"></div>
     </section>
@@ -3258,9 +3310,9 @@ export function webUi(initialTargets: string[], platform = Deno.build.os): strin
       <label>Passed words color
         <input id="subtitleAssPassedColor" type="color" value="#f0f0f0">
       </label>
+      ${outputFolderFields("subtitle", "Output folder", true)}
       <div class="command-row">
         <button id="subtitleBtn">Start Alignment</button>
-        <button class="secondary-btn" data-open-folder="subtitles">Open Folder</button>
       </div>
       <div id="subtitleStatus" class="status error"></div>
     </section>
@@ -3558,16 +3610,67 @@ export function webUi(initialTargets: string[], platform = Deno.build.os): strin
       };
     }
 
+    function syncOutputFolder(prefix) {
+      const input = document.getElementById(prefix + "OutputDir");
+      const same = document.getElementById(prefix + "SameAsInput");
+      const browse = document.querySelector('[data-browse-folder="' + prefix + '"]');
+      if (same?.checked) {
+        if (!input.disabled) input.dataset.customPath = input.value;
+        const sourceId = prefix === "subtitle" ? "subtitleMediaPath" : prefix + "Path";
+        const source = document.getElementById(sourceId).value.trim().replace(/^"|"$/g, "");
+        const separator = Math.max(source.lastIndexOf("/"), source.lastIndexOf(String.fromCharCode(92)));
+        input.value = separator < 0 ? "" : source.slice(0, separator + 1);
+      } else if (input.disabled) {
+        input.value = input.dataset.customPath || "";
+      }
+      input.disabled = Boolean(same?.checked);
+      browse.disabled = input.disabled;
+    }
+
+    function outputOptions(prefix) {
+      const sameAsInput = Boolean(document.getElementById(prefix + "SameAsInput")?.checked);
+      const outputDir = document.getElementById(prefix + "OutputDir").value.trim();
+      if (!sameAsInput && !outputDir) throw new Error("Choose an output folder first.");
+      return { sameAsInput, outputDir };
+    }
+
+    for (const prefix of ["cut", "convert", "subtitle"]) {
+      document.getElementById(prefix + "SameAsInput").addEventListener("change", () => syncOutputFolder(prefix));
+      const sourceId = prefix === "subtitle" ? "subtitleMediaPath" : prefix + "Path";
+      document.getElementById(sourceId).addEventListener("input", () => syncOutputFolder(prefix));
+    }
+
+    document.querySelectorAll("[data-browse-folder]").forEach(button => {
+      button.addEventListener("click", async () => {
+        const prefix = button.dataset.browseFolder;
+        const input = document.getElementById(prefix + "OutputDir");
+        const status = document.getElementById(prefix + "Status");
+        button.disabled = true;
+        try {
+          const result = await postJson("/api/browse-folder", { path: input.value.trim() });
+          if (result.path) input.value = result.path;
+          status.textContent = "";
+        } catch (error) {
+          status.textContent = error.message || String(error);
+        } finally {
+          syncOutputFolder(prefix);
+        }
+      });
+    });
+
     function setCutStatus(message) {
       document.querySelector("#cutStatus").textContent = message;
+      syncOutputFolder("cut");
     }
 
     function setConvertStatus(message) {
       document.querySelector("#convertStatus").textContent = message;
+      syncOutputFolder("convert");
     }
 
     function setSubtitleStatus(message) {
       document.querySelector("#subtitleStatus").textContent = message;
+      syncOutputFolder("subtitle");
     }
 
     function requireCut(action, values, showMessage = true) {
@@ -3602,6 +3705,11 @@ export function webUi(initialTargets: string[], platform = Deno.build.os): strin
       document.querySelector("#convertsDir").value = settings.outputDirs.converts;
       document.querySelector("#subtitlesDir").value = settings.outputDirs.subtitles;
       document.querySelector("#liveDir").value = settings.outputDirs.live;
+      for (const [prefix, key] of [["download", "downloads"], ["cut", "cuts"], ["convert", "converts"], ["subtitle", "subtitles"]]) {
+        const input = document.getElementById(prefix + "OutputDir");
+        if (!input.value && !input.disabled) input.value = settings.outputDirs[key];
+        syncOutputFolder(prefix);
+      }
     }
 
     document.querySelector("#saveSettingsBtn").addEventListener("click", async () => {
@@ -3674,7 +3782,14 @@ export function webUi(initialTargets: string[], platform = Deno.build.os): strin
 
     document.querySelectorAll("[data-open-folder]").forEach(button => {
       button.addEventListener("click", async () => {
-        await postJson("/api/open-folder", { key: button.dataset.openFolder });
+        button.disabled = true;
+        try {
+          await postJson("/api/open-folder", { key: button.dataset.openFolder });
+        } catch (error) {
+          alert(error.message || String(error));
+        } finally {
+          button.disabled = false;
+        }
       });
     });
 
@@ -3690,10 +3805,16 @@ export function webUi(initialTargets: string[], platform = Deno.build.os): strin
     document.querySelector("#downloadBtn").addEventListener("click", async () => {
       const target = document.querySelector("#url").value.trim();
       const action = document.querySelector("#webAction").value;
+      const status = document.querySelector("#downloadStatus");
       if (!target) return;
-      await postJson("/api/jobs", { kind: "web", target, action });
-      document.querySelector("#url").value = "";
-      await refreshJobs();
+      try {
+        await postJson("/api/jobs", { kind: "web", target, action, ...outputOptions("download") });
+        document.querySelector("#url").value = "";
+        status.textContent = "";
+        await refreshJobs();
+      } catch (error) {
+        status.textContent = error.message || String(error);
+      }
     });
 
     document.querySelector("#cutBtn").addEventListener("click", async () => {
@@ -3704,8 +3825,13 @@ export function webUi(initialTargets: string[], platform = Deno.build.os): strin
         return;
       }
       if (!requireCut("cut", cut)) return;
-      await postJson("/api/jobs", { kind: "path", target, action: "cut", ...cut });
-      await refreshJobs();
+      try {
+        await postJson("/api/jobs", { kind: "path", target, action: "cut", ...cut, ...outputOptions("cut") });
+        setCutStatus("Cut job started.");
+        await refreshJobs();
+      } catch (error) {
+        setCutStatus(error.message || String(error));
+      }
     });
 
     async function browseCutFile(fallbackMessage = "") {
@@ -3805,7 +3931,7 @@ export function webUi(initialTargets: string[], platform = Deno.build.os): strin
       }
       try {
         setConvertStatus("Starting convert...");
-        await postJson("/api/jobs", { kind: "path", target, action, quality });
+        await postJson("/api/jobs", { kind: "path", target, action, quality, ...outputOptions("convert") });
         setConvertStatus("Convert job started.");
         await refreshJobs();
       } catch (error) {
@@ -3944,7 +4070,8 @@ export function webUi(initialTargets: string[], platform = Deno.build.os): strin
           outputMode,
           assFontSize,
           assActiveColor,
-          assPassedColor
+          assPassedColor,
+          ...outputOptions("subtitle")
         });
         setSubtitleStatus("Subtitle job started.");
         await refreshJobs();
@@ -4042,7 +4169,10 @@ export function webUi(initialTargets: string[], platform = Deno.build.os): strin
         el.innerHTML = \`
           <div class="job-head">
             <div class="path" title="\${escapeHtml(job.title)}">\${escapeHtml(job.title)}</div>
-            <div class="badge \${job.status}">\${job.status}</div>
+            <div class="job-actions">
+              <div class="badge \${job.status}">\${job.status}</div>
+              \${job.status === "done" && job.outputDir ? '<button class="secondary-btn job-open-folder" type="button">Open Folder</button>' : ''}
+            </div>
           </div>
           <div class="job-progress">
             <div class="progress-track"><div class="progress-fill \${indeterminate ? "indeterminate" : ""}" style="\${indeterminate ? "" : "width:" + progress + "%"}"></div></div>
@@ -4062,6 +4192,17 @@ export function webUi(initialTargets: string[], platform = Deno.build.os): strin
           }
           lastJobsPayload = "";
           refreshJobs();
+        });
+        const openFolder = el.querySelector(".job-open-folder");
+        if (openFolder) openFolder.addEventListener("click", async () => {
+          openFolder.disabled = true;
+          try {
+            await postJson("/api/open-folder", { jobId: job.id });
+          } catch (error) {
+            alert(error.message || String(error));
+          } finally {
+            openFolder.disabled = false;
+          }
         });
         const stop = el.querySelector(".live-stop");
         if (stop) stop.addEventListener("click", async () => {
@@ -4232,23 +4373,40 @@ async function handleUiRequest(
     const settings = await loadSettings();
     const key = String(body.key ?? "");
     if (
+      !body.jobId &&
       key !== "downloads" && key !== "cuts" && key !== "converts" &&
       key !== "subtitles" && key !== "live"
     ) {
       return json({ error: "Invalid folder key." }, 400);
     }
 
-    const folder = settings.outputDirs[key];
+    let folder: string;
+    if (body.jobId) {
+      const jobId = String(body.jobId);
+      const job = jobs.get(jobId) ?? liveManager.jobs.get(jobId);
+      if (!job) return json({ error: "Job not found." }, 404);
+      if (job.status !== "done") {
+        return json({ error: "Wait for the job to finish first." }, 409);
+      }
+      if ("kind" in job && job.kind === "live") {
+        folder = job.outputFile ? dirname(job.outputFile) : job.sessionDir;
+      } else if (job.outputDir) {
+        folder = job.outputDir;
+      } else {
+        return json({ error: "No output folder recorded for this job." }, 404);
+      }
+    } else {
+      folder = settings.outputDirs[key as keyof AppSettings["outputDirs"]];
+    }
     await Deno.mkdir(folder, { recursive: true });
 
     if (isWindows) {
-      await new Deno.Command("powershell", {
-        args: ["-NoProfile", "-Command", "Start-Process $env:TARGET_FOLDER"],
-        env: { TARGET_FOLDER: folder },
-        stdin: "null",
-        stdout: "null",
-        stderr: "null",
-      }).spawn().status;
+      const result = await runWindowsHidden("powershell.exe", [
+        "-NoProfile", "-Command", "Start-Process $env:TARGET_FOLDER",
+      ], { env: { TARGET_FOLDER: folder } });
+      if (result.code !== 0) {
+        throw new Error(result.stderr || "Could not open the output folder.");
+      }
     } else if (isMac) {
       await new Deno.Command("/usr/bin/open", {
         args: [folder], stdin: "null", stdout: "null", stderr: "null",
@@ -4256,6 +4414,17 @@ async function handleUiRequest(
     }
 
     return json({ ok: true, path: folder });
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/browse-folder") {
+    const body = await request.json().catch(() => ({}));
+    const path = await browseWindowsFile(
+      "Select output folder",
+      "",
+      true,
+      typeof body.path === "string" ? cleanInput(body.path) : "",
+    );
+    return json({ path });
   }
 
   if (request.method === "POST" && url.pathname === "/api/browse-file") {
@@ -4318,7 +4487,12 @@ async function handleUiRequest(
         return json({ error: `Text file not found: ${scriptPath}` }, 400);
       }
 
+      const settings = await loadSettings();
+      const outputDir = resolveJobOutputDir(
+        body, settings.outputDirs.subtitles, mediaPath,
+      );
       const job = createJob(`Subtitles: ${basename(mediaPath)}`);
+      job.outputDir = outputDir;
       const runner: Runner = (command, args) =>
         runLogged(command, args, (line) => appendLog(job, line), {
           env: {
@@ -4335,8 +4509,6 @@ async function handleUiRequest(
             MPLCONFIGDIR: join(appDir, "matplotlib-cache"),
           },
         });
-      const settings = await loadSettings();
-
       startJob(job, async (log) => {
         log("Checking ffmpeg...");
         if (!(await ensureTool("ffmpeg"))) {
@@ -4352,7 +4524,7 @@ async function handleUiRequest(
           scriptPath,
           language,
           model,
-          settings.outputDirs.subtitles,
+          outputDir,
           {
             runner,
             log: (line) => appendLog(job, line),
@@ -4366,18 +4538,24 @@ async function handleUiRequest(
       return json({ jobId: job.id });
     }
 
+    const settings = await loadSettings();
+    const outputDir = resolveJobOutputDir(
+      body,
+      body.kind === "web" ? settings.outputDirs.downloads
+        : action === "cut" ? settings.outputDirs.cuts : settings.outputDirs.converts,
+      body.kind === "web" ? undefined : target,
+    );
     const job = createJob(target);
+    job.outputDir = outputDir;
     const runner: Runner = (command, args) =>
       runLogged(command, args, (line) => appendLog(job, line));
-    const settings = await loadSettings();
-
     if (body.kind === "web") {
       startJob(job, async (log) => {
         log("Waiting for tools...");
         if (!(await ensureToolsReady(log))) return 1;
         return await processWebDownload(target, action as WebAction, {
           runner,
-          outputDir: settings.outputDirs.downloads,
+          outputDir,
           log: (line) => appendLog(job, line),
         });
       });
@@ -4389,9 +4567,7 @@ async function handleUiRequest(
       if (!(await ensureToolsReady(log))) return 1;
       return await processLocalFile(target, action as LocalAction, {
         runner,
-        outputDir: action === "cut"
-          ? settings.outputDirs.cuts
-          : settings.outputDirs.converts,
+        outputDir,
         start: String(body.start ?? ""),
         end: String(body.end ?? ""),
         quality: String(body.quality ?? "copy"),
@@ -4414,14 +4590,15 @@ async function handleUiRequest(
       runLogged(command, args, (line) => appendLog(job, line));
     const settings = await loadSettings();
 
+    job.outputDir = action === "cut"
+      ? settings.outputDirs.cuts
+      : settings.outputDirs.converts;
     startJob(job, async (log) => {
       log("Waiting for tools...");
       if (!(await ensureToolsReady(log))) return 1;
       return await processLocalFile(saved, action, {
         runner,
-        outputDir: action === "cut"
-          ? settings.outputDirs.cuts
-          : settings.outputDirs.converts,
+        outputDir: job.outputDir,
         start: String(form.get("start") ?? ""),
         end: String(form.get("end") ?? ""),
         quality: String(form.get("quality") ?? "copy"),
