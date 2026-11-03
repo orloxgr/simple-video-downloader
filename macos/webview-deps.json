@@ -1,0 +1,8 @@
+{
+  "version": "0.6.0",
+  "packages": {
+    "webview": "W3FAOz5UP8tuvPG5N58JcqX9NB3rcAGHpS9g3+qxpzvLFlueypu+XfLhBB9hXEgzRR8D6zMVier1TDuPWs6oZg==",
+    "webview-darwin-arm64": "rIzW/ie38uLGPCVbdY6I7VDE8dr00EB6lqEcGRHeSc1mOl92tABGJTkcSyqNb+yW3OuvBwvH/eWRJwjDrg4zFw==",
+    "webview-darwin-x64": "4Bh3aKQfik7AZhK8TKGNkMQTpCUvVTKVqWGKkq9vQyl6HQP0q5+iW+LJT1Wlehpad9MNvaW/9VfXwyWDlq9HvQ=="
+  }
+}

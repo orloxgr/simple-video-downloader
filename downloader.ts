@@ -1,6 +1,7 @@
 import { basename, dirname, join, parse, resolve } from "node:path";
 import { LiveManager, liveIsActive } from "./live.ts";
 import { macFfmpegRelease, platformDownloads, platformPaths } from "./platform.ts";
+import { createMacWindow, loadMacWindowRuntime } from "./macos/window.ts";
 
 const APP_VERSION = "2.4.1";
 const APP_NAME = "Svid";
@@ -675,7 +676,7 @@ async function installLatestSvidUpdate(): Promise<Record<string, unknown>> {
 
   if (isMac) {
     // Replacing a signed .app is a user action in the first macOS version.
-    await openAppWindow(release.setupUrl);
+    await openExternalUrl(release.setupUrl);
     return { started: true, manualInstall: true, latestVersion: release.version };
   }
 
@@ -1941,7 +1942,9 @@ const liveManager = new LiveManager({
 let lastUiHeartbeat = Date.now();
 let toolsReadyPromise: Promise<boolean> | null = null;
 let requestUiShutdown: (() => void) | undefined;
+let requestUiActivate: (() => void) | undefined;
 let uiIsClosing = false;
+let uiShutdownPromise: Promise<void> | undefined;
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -3442,11 +3445,11 @@ export function webUi(initialTargets: string[], platform = Deno.build.os): strin
           </div>
           <div class="thanks-item">
             <div>
-              <div class="thanks-name">Microsoft Edge WebView2</div>
+              <div class="thanks-name">${isMac ? "WebviewJS / WebKit" : "Microsoft Edge WebView2"}</div>
               <div class="thanks-role">Native app window web runtime</div>
             </div>
-            <a class="tool-link" href="https://developer.microsoft.com/microsoft-edge/webview2/" target="_blank" rel="noopener noreferrer">Project</a>
-            <a class="tool-link" href="https://learn.microsoft.com/microsoft-edge/webview2/" target="_blank" rel="noopener noreferrer">Docs</a>
+            <a class="tool-link" href="${isMac ? "https://github.com/webviewjs/webview" : "https://developer.microsoft.com/microsoft-edge/webview2/"}" target="_blank" rel="noopener noreferrer">Project</a>
+            <a class="tool-link" href="${isMac ? "https://webview.js.org/" : "https://learn.microsoft.com/microsoft-edge/webview2/"}" target="_blank" rel="noopener noreferrer">Docs</a>
           </div>
         </div>
       </div>
@@ -3766,6 +3769,10 @@ export function webUi(initialTargets: string[], platform = Deno.build.os): strin
     });
 
     document.querySelector("#quitSvidBtn")?.addEventListener("click", async () => {
+      if (window.svidNative?.quit) {
+        await window.svidNative.quit();
+        return;
+      }
       const button = document.querySelector("#quitSvidBtn");
       button.disabled = true;
       button.textContent = "Saving recordings...";
@@ -4271,13 +4278,18 @@ async function handleUiRequest(
     return json({ app: APP_NAME, pid: Deno.pid });
   }
 
+  if (isMac && request.method === "POST" && url.pathname === "/api/activate") {
+    if (!requestUiActivate || uiIsClosing) return json({ error: "Svid is not ready." }, 409);
+    requestUiActivate();
+    return json({ ok: true });
+  }
+
   if (isMac && request.method === "POST" && url.pathname === "/api/shutdown") {
-    if ([...jobs.values()].some((job) => ["queued", "running"].includes(job.status))) {
-      return json({ error: "Wait for the current download, conversion or subtitle job to finish before quitting." }, 409);
+    try {
+      await shutdownUi();
+    } catch (error) {
+      return json({ error: error instanceof Error ? error.message : String(error) }, 409);
     }
-    uiIsClosing = true;
-    await liveManager.shutdown();
-    requestUiShutdown?.();
     return json({ ok: true });
   }
 
@@ -4622,6 +4634,33 @@ async function handleUiRequest(
   return new Response("Not found", { status: 404 });
 }
 
+async function shutdownUi(waitForJobs = false) {
+  if (uiShutdownPromise) return await uiShutdownPromise;
+  const busy = () => [...jobs.values()].some((job) => ["queued", "running"].includes(job.status));
+  if (!waitForJobs && busy()) {
+    throw new Error("Wait for the current download, conversion or subtitle job to finish before quitting.");
+  }
+  uiIsClosing = true;
+  uiShutdownPromise = (async () => {
+    await liveManager.shutdown();
+    while (waitForJobs && busy()) await new Promise((resolve) => setTimeout(resolve, 500));
+  })();
+  try {
+    await uiShutdownPromise;
+    requestUiShutdown?.();
+  } catch (error) {
+    uiIsClosing = false;
+    uiShutdownPromise = undefined;
+    throw error;
+  }
+}
+
+async function openExternalUrl(url: string) {
+  await new Deno.Command(isMac ? "/usr/bin/open" : "xdg-open", {
+    args: [url], stdout: "null", stderr: "null",
+  }).spawn().status;
+}
+
 async function openAppWindow(url: string) {
   if (isWindows) {
     await new Deno.Command("powershell", {
@@ -4637,12 +4676,7 @@ async function openAppWindow(url: string) {
     return;
   }
 
-  const opener = Deno.build.os === "darwin" ? "open" : "xdg-open";
-  await new Deno.Command(opener, {
-    args: [url],
-    stdout: "null",
-    stderr: "null",
-  }).spawn().status;
+  await openExternalUrl(url);
 }
 
 async function startUi(
@@ -4651,6 +4685,7 @@ async function startUi(
 ) {
   const sessionFile = join(appDir, "ui-session.json");
   if (isMac) {
+    let previousSessionUrl: string | undefined;
     try {
       const previous = JSON.parse(await Deno.readTextFile(sessionFile));
       if (Number.isInteger(previous.port) && previous.port > 0 && previous.port <= 65535) {
@@ -4658,12 +4693,22 @@ async function startUi(
         const response = await fetch(`${previousUrl}/api/session`, { signal: AbortSignal.timeout(1000) });
         const session = await response.json();
         if (session.app === APP_NAME && session.pid === previous.pid) {
-          if (options.openBrowserWindow !== false) await openAppWindow(previousUrl);
-          return;
+          previousSessionUrl = previousUrl;
         }
       }
     } catch {
       // The previous backend is closed; start a new one and restore its schedules.
+    }
+    if (previousSessionUrl) {
+      if (options.openBrowserWindow !== false) {
+        const activate = await fetch(`${previousSessionUrl}/api/activate`, {
+          method: "POST", signal: AbortSignal.timeout(3000),
+        });
+        if (!activate.ok) {
+          await showMacStartupError("Quit the running Svid session before opening this version.");
+        }
+      }
+      return;
     }
   }
   await liveManager.restore();
@@ -4691,10 +4736,28 @@ async function startUi(
   }
   console.log(`${APP_NAME} UI`);
   console.log(url);
-  if (options.openBrowserWindow !== false) await openAppWindow(url);
+  let nativeWindow: ReturnType<typeof createMacWindow> | undefined;
+  if (isMac && options.openBrowserWindow !== false) {
+    try {
+      nativeWindow = createMacWindow(url, `${APP_NAME} - ${APP_TAGLINE}`, loadMacWindowRuntime(), {
+        shutdown: shutdownUi,
+        openExternal: openExternalUrl,
+        onError: console.error,
+      });
+      requestUiActivate = () => nativeWindow?.focus();
+    } catch (error) {
+      await liveManager.shutdown().catch(console.error);
+      await server.shutdown();
+      await Deno.remove(sessionFile).catch(() => {});
+      await showMacStartupError(error instanceof Error ? error.message : String(error));
+      throw error;
+    }
+  } else if (options.openBrowserWindow !== false) {
+    await openAppWindow(url);
+  }
 
   const shutdownTimer = setInterval(() => {
-    const stale = Date.now() - lastUiHeartbeat > 8000;
+    const stale = !nativeWindow && Date.now() - lastUiHeartbeat > 8000;
     if (stale && !hasActiveJobs()) {
       clearInterval(shutdownTimer);
       server.shutdown().catch(() => {});
@@ -4705,8 +4768,17 @@ async function startUi(
     await server.finished;
   } finally {
     clearInterval(shutdownTimer);
+    requestUiActivate = undefined;
+    nativeWindow?.dispose();
     if (isMac) await Deno.remove(sessionFile).catch(() => {});
   }
+}
+
+async function showMacStartupError(message: string) {
+  await new Deno.Command("/usr/bin/osascript", {
+    args: ["-e", 'on run argv\ndisplay alert "Svid could not open" message (item 1 of argv) as critical\nend run', message],
+    stdout: "null", stderr: "null",
+  }).spawn().status;
 }
 
 async function processItem(rawTarget: string): Promise<void> {

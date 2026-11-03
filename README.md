@@ -3,7 +3,7 @@
 Simple Video Download Cut and Convert
 
 Svid helps you download videos, cut clips, and convert media files from one
-simple Windows app, with a browser-based macOS preview. It supports drag and drop, keeps downloads/cuts/converts/
+Windows app, with a macOS preview. It supports drag and drop, keeps downloads/cuts/converts/
 subtitles in separate folders, and includes a normal installer/uninstaller.
 
 It is powered by `yt-dlp`, `ffmpeg`, Deno, and Microsoft WebView2 on Windows. You do not
@@ -41,17 +41,20 @@ Mac packages can be built from Windows with `.\build-macos.ps1`:
 - `dist\Svid-macOS-x64.zip` for Intel.
 
 Requires macOS 14 or newer. Extract the ZIP, move `Svid.app` to Applications,
-then double-click it. The app opens the existing Svid interface in the default
-browser. It prepares its own tools on first use without Homebrew or a manual
+then double-click it. Svid opens in its own window using the Mac's built-in
+WebKit. The native window support is bundled with the app. It prepares its
+media tools on first use without Homebrew or a manual
 Python installation. These are cross-compiled preview builds, not yet verified
-on a real Mac and not signed with an Apple Developer ID or notarized. See the
+on a real Mac. The app bundle has an ad-hoc signature, but no Apple Developer ID
+signature or notarization. See the
 `START-HERE.txt` included in each ZIP for first-open instructions.
 
 On Mac, outputs use `~/Downloads` and `~/Movies/Svid`. Settings, schedules and
 downloaded tools are kept in `~/Library/Application Support/Svid`, separately
 from the app bundle. Use **Settings > Save recordings & Quit Svid** to save live
-recordings and exit; an active recording continues if you only close the
-browser tab. Opening Svid again reconnects to the current session. App updates
+recordings and exit. Closing the window or choosing Quit also saves live
+recordings first. Other running jobs must finish before quitting.
+Opening Svid again brings its existing window to the front. App updates
 download the matching Mac ZIP; quit and replace the app in Applications.
 
 ### Windows
