@@ -6,6 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>SvidSetup</AssemblyName>
+    <Version>2.4.5</Version>
     <RootNamespace>Svid.Setup</RootNamespace>
     <ApplicationIcon>..\assets\app-icon.ico</ApplicationIcon>
   </PropertyGroup>

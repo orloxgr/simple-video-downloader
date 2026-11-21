@@ -266,6 +266,23 @@ export class LiveManager {
     return join(this.controlDir(job), `stop-${this.instanceId}`);
   }
 
+  async clear(id: string): Promise<boolean> {
+    const job = this.jobs.get(id);
+    if (!job) return false;
+    if (liveIsActive(job) || this.workers.has(id)) {
+      throw new Error("Wait for the recording to finish before clearing its job.");
+    }
+    this.jobs.delete(id);
+    try {
+      await this.save();
+    } catch (error) {
+      this.jobs.set(id, job);
+      throw error;
+    }
+    this.stopRequests.delete(id);
+    return true;
+  }
+
   async stop(id: string): Promise<LiveJob | undefined> {
     const job = this.jobs.get(id);
     if (!job || !liveIsActive(job)) return job;

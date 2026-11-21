@@ -128,15 +128,17 @@ hidden-browser autoplay and HLS detection, retry while offline, recoverable
 parts and joining on stop. FFmpeg handles HLS variants and audio tracks.
 Hellas News players are resolved from the page and its nested Castr iframe,
 so channel URLs are refreshed instead of hardcoding a CDN stream address.
-Python/Playwright are installed automatically through `uv` on first use; the
-helper uses installed Edge or downloads headless Chromium when needed.
+Python, Playwright and Truststore are installed automatically through `uv` on
+first use. HTTPS discovery uses native certificate validation. The helper uses
+installed Edge or downloads headless Chromium when needed.
 
 Developer checks (the Python HLS tests use the local FFmpeg/FFprobe tools):
 
 ```powershell
 .\deno.exe check downloader.ts live.ts
 .\deno.exe test --allow-read --allow-write platform_test.ts live_test.ts
-python -m unittest -v test_live_capture.py
+python -m unittest -v test_live_discovery.py
+uv run --no-project --python 3.12 --with truststore==0.10.5 python -m unittest -v test_live_capture.py
 ```
 
 ## Installer
@@ -203,5 +205,5 @@ already in `dist` are kept.
 After building, create a GitHub release with:
 
 ```powershell
-gh release create v2.4.1 dist\Svid-Setup.exe dist\Svid.exe dist\Svid-macOS-arm64.zip --title "Svid v2.4.1" --notes-file RELEASE_NOTES.md
+gh release create v2.4.5 dist\Svid-Setup.exe dist\Svid.exe dist\Svid-macOS-arm64.zip --title "Svid v2.4.5" --notes-file RELEASE_NOTES.md
 ```

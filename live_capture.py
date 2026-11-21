@@ -13,13 +13,16 @@ import json
 import os
 import re
 import shutil
+import ssl
 import subprocess
 import sys
 import time
 from http.client import IncompleteRead
+from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 from urllib.request import Request, urlopen
+from urllib.error import URLError
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130 Safari/537.36"
 NETWORK_ERRORS = (OSError, TimeoutError, IncompleteRead)
@@ -59,10 +62,66 @@ class Control:
         self.check()
 
 
+@lru_cache(maxsize=1)
+def https_context() -> ssl.SSLContext:
+    import truststore
+
+    # Use native certificate chain validation, not OpenSSL's flattened Windows
+    # root store, which can select expired alternative certificate chains.
+    return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+
+
 def request_text(url: str, headers: dict[str, str]) -> tuple[str, str]:
-    with urlopen(Request(url, headers=headers), timeout=15) as response:
-        data = response.read(4 * 1024 * 1024)
-        return data.decode("utf-8-sig", errors="replace"), response.url
+    try:
+        with urlopen(Request(url, headers=headers), timeout=15, context=https_context()) as response:
+            data = response.read(4 * 1024 * 1024)
+            return data.decode("utf-8-sig", errors="replace"), response.url
+    except URLError as error:
+        if isinstance(error.reason, ssl.SSLCertVerificationError):
+            host = urlparse(url).hostname
+            raise URLError(f"Certificate verification failed for {host}: {error.reason}") from error
+        raise
+
+
+def diavlos_conference_id(page_url: str) -> str | None:
+    parsed = urlparse(page_url)
+    if parsed.scheme not in ("http", "https") or parsed.hostname not in ("diavlos.grnet.gr", "new.diavlos.grnet.gr"):
+        return None
+    match = re.search(r"/(?:epresence-conference|embed/conference)/(\d+)/?$", parsed.path)
+    return match.group(1) if match else None
+
+
+def diavlos_sources(page_url: str, headers: dict[str, str]) -> list[tuple[str, dict[str, str]]] | None:
+    conference_id = diavlos_conference_id(page_url)
+    if conference_id is None:
+        return None
+    # The Angular page starts with a preroll and also has a footer player. Only
+    # the conference API identifies the actual broadcast, including while offline.
+    api_url = f"https://diavlos.grnet.gr/api/epresence-event/{conference_id}"
+    text, final_url = request_text(api_url, headers)
+    try:
+        entries = json.loads(text)
+    except ValueError as error:
+        raise ValueError("Diavlos returned invalid conference metadata instead of JSON.") from error
+    if not isinstance(entries, list):
+        raise ValueError("Diavlos returned an unexpected conference metadata format.")
+    for entry in entries:
+        if not isinstance(entry, dict) or str(entry.get("nid", "")) != conference_id:
+            continue
+        source = entry.get("field_api_event_stream_url")
+        if not isinstance(source, str) or not source.strip():
+            continue
+        try:
+            media_url = urljoin(final_url, html.unescape(source.strip()))
+            parsed = urlparse(media_url)
+        except ValueError:
+            continue
+        if parsed.scheme not in ("http", "https") or parsed.username or parsed.password:
+            continue
+        if any(name in parsed.path.lower() for name in ("prerollvideo", "nobroadcastinprogress")):
+            continue
+        return [(media_url, {"User-Agent": headers.get("User-Agent", USER_AGENT), "Referer": page_url})]
+    return []
 
 
 def page_sources(page_url: str, headers: dict[str, str], seen: set[str] | None = None) -> list[tuple[str, dict[str, str]]]:
@@ -71,6 +130,9 @@ def page_sources(page_url: str, headers: dict[str, str], seen: set[str] | None =
     if page_url in seen or len(seen) >= 8:
         return []
     seen.add(page_url)
+    conference_sources = diavlos_sources(page_url, headers)
+    if conference_sources is not None:
+        return conference_sources
     text, final_url = request_text(page_url, headers)
     if text.lstrip().startswith("#EXTM3U"):
         return [(final_url, headers)]
@@ -99,6 +161,7 @@ def playable(url: str, headers: dict[str, str], depth: int = 0) -> bool:
         return True
     # Probe the highest bandwidth variant; FFmpeg keeps alternate audio renditions.
     variants = []
+    last_error = None
     lines = [line.strip() for line in text.splitlines()]
     for index, line in enumerate(lines[:-1]):
         if line.startswith("#EXT-X-STREAM-INF:"):
@@ -110,8 +173,11 @@ def playable(url: str, headers: dict[str, str], depth: int = 0) -> bool:
         try:
             if playable(child, headers, depth + 1):
                 return True
-        except NETWORK_ERRORS:
+        except NETWORK_ERRORS as error:
+            last_error = error
             continue
+    if last_error is not None:
+        raise last_error
     return False
 
 
@@ -214,30 +280,39 @@ class BrowserDiscovery:
 
 
 def discover(url: str, control: Control, browser: BrowserDiscovery, max_wait: float | None = None) -> tuple[str, dict[str, str]]:
-    event("Stand by: checking for the live stream. Offline streams are retried automatically.", "standby")
+    conference_id = diavlos_conference_id(url)
+    message = (f"Stand by: checking the actual live source for Diavlos conference {conference_id}."
+               if conference_id else "Stand by: checking for the live stream. Offline streams are retried automatically.")
+    event(message, "standby")
     started = time.monotonic()
     attempt = 0
+    last_issue = None
     while max_wait is None or time.monotonic() - started < max_wait:
         control.check()
         attempt += 1
         candidates = []
+        issue = None
         try:
             candidates = page_sources(url, {"User-Agent": USER_AGENT})
-        except NETWORK_ERRORS:
-            pass
-        # Most Hellas News/Castr pages expose the URL without a browser. Diavlos
-        # may need autoplay and request interception in cross-origin frames.
-        if not candidates and not urlparse(url).path.lower().endswith(".m3u8"):
+        except (*NETWORK_ERRORS, ValueError) as error:
+            issue = f"Could not check the live source ({type(error).__name__}): {error}. Retrying automatically."
+        # Never fall back to Diavlos' preroll/offline/footer players while the
+        # conference itself is offline. Retry its API and actual HLS instead.
+        if not candidates and conference_id is None and not urlparse(url).path.lower().endswith(".m3u8"):
             candidates = browser.probe(reload=attempt > 1)
         for playlist, headers in candidates:
             control.check()
             try:
                 if playable(playlist, headers):
                     return playlist, headers
-            except NETWORK_ERRORS:
+            except NETWORK_ERRORS as error:
+                issue = f"Could not read the live playlist ({type(error).__name__}): {error}. Retrying automatically."
                 continue
-        if attempt == 1 or attempt % 20 == 0:
+        if issue and (issue != last_issue or attempt % 20 == 0):
+            event(issue, "standby")
+        elif not issue and (attempt == 1 or last_issue or attempt % 20 == 0):
             event("The stream is offline or has no media yet; still standing by.", "standby")
+        last_issue = issue
         control.wait(3 if browser.page else 15)
     raise TimeoutError("The live stream did not return after the connection was lost.")
 

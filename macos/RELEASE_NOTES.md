@@ -1,5 +1,18 @@
-# Svid 2.4.1 - macOS Preview 2
+# Svid 2.4.5 - macOS Preview 1
 
+- Version 2.4.5 is displayed in Svid and included in the Mac bundle metadata.
+- Added Clear Job for finished jobs without deleting their media files.
+- Live recording dates and times have separate fields and an hours/minutes
+  picker, including on macOS.
+- Live source checks use native HTTPS certificate validation and report actual
+  connection errors instead of treating them as an offline stream.
+- Diavlos conferences use the actual broadcast URL from the public conference
+  API instead of the introductory video or offline placeholder.
+- Offline Diavlos conferences stay on standby and retry the live source.
+- Shortened Unicode download filenames while retaining the video ID, fixing
+  Facebook downloads that failed with `File name too long`.
+- Added detection of public media URLs in Alpha's Kwik player for news pages
+  that yt-dlp could not extract directly.
 - Svid opens in its own window instead of a browser tab.
 - The window uses the Mac's built-in WebKit. Native window support is bundled
   with the app; no extra installation is needed.

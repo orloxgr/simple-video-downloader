@@ -1,9 +1,11 @@
 import { basename, dirname, join, parse, resolve } from "node:path";
 import { LiveManager, liveIsActive } from "./live.ts";
+import { scheduleDateTime } from "./live_schedule.ts";
 import { macFfmpegRelease, platformDownloads, platformPaths } from "./platform.ts";
 import { createMacWindow, loadMacWindowRuntime } from "./macos/window.ts";
+import { ALPHA_USER_AGENT, DOWNLOAD_OUTPUT_TEMPLATE, resolveDownloadSource } from "./web_download.ts";
 
-const APP_VERSION = "2.4.1";
+const APP_VERSION = "2.4.5";
 const APP_NAME = "Svid";
 const APP_TAGLINE = "Simple Video Download Cut and Convert";
 const APP_REPO = "orloxgr/simple-video-downloader";
@@ -1833,6 +1835,8 @@ function ytDlpCommonArgs(): string[] {
     "ejs:github",
     "--force-ipv4",
     "--live-from-start",
+    "--output",
+    DOWNLOAD_OUTPUT_TEMPLATE,
   ];
 }
 
@@ -1855,6 +1859,7 @@ async function processWebDownload(
   const log = options.log ?? console.log;
 
   try {
+    const source = await resolveDownloadSource(target, { log });
     const args = [
       ...ytDlpCommonArgs(),
       "--ffmpeg-location",
@@ -1862,6 +1867,10 @@ async function processWebDownload(
       "--paths",
       `temp:${webTemp}`,
     ];
+
+    if (source.referer) {
+      args.push("--referer", source.referer, "--user-agent", ALPHA_USER_AGENT);
+    }
 
     if (options.outputDir) {
       await Deno.mkdir(options.outputDir, { recursive: true });
@@ -1900,7 +1909,7 @@ async function processWebDownload(
       args.push("-x", "--audio-format", "mp3", "--audio-quality", "0");
     }
 
-    args.push(target);
+    args.push(source.url);
     return await runner(exe("yt-dlp"), args);
   } finally {
     await removePath(webTemp);
@@ -1935,6 +1944,7 @@ const liveManager = new LiveManager({
   },
   launch: (config, log) => runLogged(exe("uv"), [
     "run", "--no-project", "--python", "3.12", "--with", "playwright>=1.49,<2",
+    "--with", "truststore==0.10.5",
     "python", "-u", join(appDir, "live-runtime", "live_capture.py"),
     "--config", config, "--ffmpeg", exe("ffmpeg"),
   ], log, { env: { PYTHONIOENCODING: "utf-8" } }),
@@ -2908,6 +2918,24 @@ export function webUi(initialTargets: string[], platform = Deno.build.os): strin
       gap: 8px;
     }
     .job-open-folder { min-height: 30px; padding: 4px 8px; font-size: 12px; }
+    .job-clear { min-height: 30px; padding: 4px 8px; font-size: 12px; }
+    .schedule-fields { min-width: 0; border: 0; padding: 0; margin: 0; }
+    .schedule-fields legend { padding: 0; margin-bottom: 7px; font-size: 12px; color: var(--ink); }
+    .schedule-fields .row { grid-template-columns: minmax(0, 1fr) minmax(90px, .65fr); }
+    .schedule-time { cursor: pointer; font-variant-numeric: tabular-nums; }
+    .time-picker {
+      width: min(300px, calc(100vw - 32px));
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      color: var(--ink);
+    }
+    .time-picker::backdrop { background: #0008; }
+    .time-picker h2 { margin-bottom: 12px; }
+    .time-picker .row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+    .time-picker select { min-height: 42px; font-variant-numeric: tabular-nums; }
+    .time-picker .command-row { justify-content: flex-end; margin-top: 8px; }
     .time-box {
       display: grid;
       gap: 7px;
@@ -3142,13 +3170,35 @@ export function webUi(initialTargets: string[], platform = Deno.build.os): strin
         <input id="liveTitle" maxlength="120" placeholder="Council meeting" autocomplete="off">
       </label>
       <div class="row">
-        <label>Start date &amp; time
-          <input id="liveStart" type="datetime-local" step="60">
-        </label>
-        <label>Stop date &amp; time (optional)
-          <input id="liveEnd" type="datetime-local" step="60">
-        </label>
+        <fieldset class="schedule-fields">
+          <legend>Start</legend>
+          <div class="row">
+            <label>Date<input id="liveStartDate" type="date"></label>
+            <label>Time<input id="liveStartTime" class="schedule-time" readonly placeholder="HH:MM" aria-haspopup="dialog" aria-controls="liveTimePicker" aria-expanded="false"></label>
+          </div>
+        </fieldset>
+        <fieldset class="schedule-fields">
+          <legend>Stop (optional)</legend>
+          <div class="row">
+            <label>Date<input id="liveEndDate" type="date"></label>
+            <label>Time<input id="liveEndTime" class="schedule-time" readonly placeholder="HH:MM" aria-haspopup="dialog" aria-controls="liveTimePicker" aria-expanded="false"></label>
+          </div>
+        </fieldset>
       </div>
+      <dialog id="liveTimePicker" class="time-picker" aria-labelledby="timePickerTitle">
+        <form method="dialog">
+          <h2 id="timePickerTitle">Time</h2>
+          <div class="row">
+            <label>Hours<select id="timePickerHours" aria-label="Hours"></select></label>
+            <label>Minutes<select id="timePickerMinutes" aria-label="Minutes"></select></label>
+          </div>
+          <div class="command-row">
+            <button type="button" id="timePickerClear" class="secondary-btn">Clear</button>
+            <button type="button" id="timePickerCancel" class="secondary-btn">Cancel</button>
+            <button value="set">Set Time</button>
+          </div>
+        </form>
+      </dialog>
       <label>Output format
         <select id="liveFormat">
           <option value="mp4">MP4</option>
@@ -3527,7 +3577,56 @@ export function webUi(initialTargets: string[], platform = Deno.build.os): strin
       return local.toISOString().slice(0, 16);
     }
 
-    document.querySelector("#liveStart").value = localDateInput(new Date(Date.now() + 5 * 60000));
+    // Serialize the shared function after TypeScript has stripped its types.
+    const scheduleDateTime = ${scheduleDateTime.toString()};
+    const initialStart = localDateInput(new Date(Date.now() + 5 * 60000)).split("T");
+    document.querySelector("#liveStartDate").value = initialStart[0];
+    document.querySelector("#liveStartTime").value = initialStart[1];
+    const timePicker = document.querySelector("#liveTimePicker");
+    const pickerHours = document.querySelector("#timePickerHours");
+    const pickerMinutes = document.querySelector("#timePickerMinutes");
+    let timePickerTarget = null;
+    for (const [select, count] of [[pickerHours, 24], [pickerMinutes, 60]]) {
+      for (let value = 0; value < count; value++) {
+        const text = String(value).padStart(2, "0");
+        select.add(new Option(text, text));
+      }
+    }
+    function openTimePicker(input) {
+      if (timePicker.open) return;
+      timePickerTarget = input;
+      const parts = (input.value || localDateInput(new Date()).split("T")[1]).split(":");
+      pickerHours.value = parts[0];
+      pickerMinutes.value = parts[1];
+      document.querySelector("#timePickerTitle").textContent = input.id === "liveStartTime" ? "Start time" : "Stop time";
+      timePicker.returnValue = "cancel";
+      input.setAttribute("aria-expanded", "true");
+      timePicker.showModal();
+      pickerHours.focus();
+    }
+    for (const input of document.querySelectorAll(".schedule-time")) {
+      input.addEventListener("click", () => openTimePicker(input));
+      input.addEventListener("keydown", event => {
+        if (["Enter", " ", "ArrowDown"].includes(event.key)) {
+          event.preventDefault();
+          openTimePicker(input);
+        }
+      });
+    }
+    document.querySelector("#timePickerClear").addEventListener("click", () => timePicker.close("clear"));
+    document.querySelector("#timePickerCancel").addEventListener("click", () => timePicker.close("cancel"));
+    timePicker.addEventListener("close", () => {
+      if (!timePickerTarget) return;
+      if (timePicker.returnValue === "set") {
+        timePickerTarget.value = pickerHours.value + ":" + pickerMinutes.value;
+      } else if (timePicker.returnValue === "clear") {
+        timePickerTarget.value = "";
+        if (timePickerTarget.id === "liveEndTime") document.querySelector("#liveEndDate").value = "";
+      }
+      timePickerTarget.setAttribute("aria-expanded", "false");
+      timePickerTarget.focus();
+      timePickerTarget = null;
+    });
     document.querySelector("#liveTimezone").textContent = "Dates and times use your computer timezone: " +
       Intl.DateTimeFormat().resolvedOptions().timeZone + ".";
     document.querySelector("#hellasLiveBtn").addEventListener("click", () => {
@@ -3540,15 +3639,15 @@ export function webUi(initialTargets: string[], platform = Deno.build.os): strin
       const buttons = [document.querySelector("#scheduleLiveBtn"), document.querySelector("#startLiveBtn")];
       try {
         const target = document.querySelector("#liveUrl").value.trim();
-        const start = document.querySelector("#liveStart").value;
-        const end = document.querySelector("#liveEnd").value;
         if (!target) throw new Error("Paste a live page URL first.");
-        if (!now && !start) throw new Error("Choose a start date and time.");
+        const startAt = now ? undefined : scheduleDateTime(
+          document.querySelector("#liveStartDate").value, document.querySelector("#liveStartTime").value, "Start");
+        const stopAt = scheduleDateTime(
+          document.querySelector("#liveEndDate").value, document.querySelector("#liveEndTime").value, "Stop", true);
         buttons.forEach(button => { button.disabled = true; });
         await postJson("/api/live", {
           target, title: document.querySelector("#liveTitle").value,
-          startAt: now ? undefined : new Date(start).toISOString(),
-          stopAt: end ? new Date(end).toISOString() : undefined,
+          startAt, stopAt,
           format: document.querySelector("#liveFormat").value
         });
         status.textContent = "Live recording added. Follow its status below in Jobs; use Stop & Save to finish.";
@@ -4171,6 +4270,7 @@ export function webUi(initialTargets: string[], platform = Deno.build.os): strin
         const hasProgress = typeof job.progress === "number";
         const progress = hasProgress ? Math.max(0, Math.min(100, job.progress)) : 0;
         const activeLive = job.kind === "live" && !["done", "failed", "cancelled"].includes(job.status);
+        const canClear = ["done", "failed", "cancelled"].includes(job.status);
         const indeterminate = ["running", "preparing", "standby", "recording", "stopping"].includes(job.status) && !hasProgress;
         const latest = job.latestLine || (indeterminate ? "Working..." : "Waiting...");
         el.innerHTML = \`
@@ -4179,6 +4279,7 @@ export function webUi(initialTargets: string[], platform = Deno.build.os): strin
             <div class="job-actions">
               <div class="badge \${job.status}">\${job.status}</div>
               \${job.status === "done" && job.outputDir ? '<button class="secondary-btn job-open-folder" type="button">Open Folder</button>' : ''}
+              \${canClear ? '<button class="secondary-btn job-clear" type="button" title="Remove this job from the list; keep its files">Clear Job</button>' : ''}
             </div>
           </div>
           <div class="job-progress">
@@ -4212,6 +4313,19 @@ export function webUi(initialTargets: string[], platform = Deno.build.os): strin
           }
         });
         const stop = el.querySelector(".live-stop");
+        const clear = el.querySelector(".job-clear");
+        if (clear) clear.addEventListener("click", async () => {
+          clear.disabled = true;
+          try {
+            await postJson("/api/jobs/clear", { id: job.id });
+            openLogs.delete(job.id);
+            lastJobsPayload = "";
+            await refreshJobs();
+          } catch (error) {
+            alert(error.message || String(error));
+            clear.disabled = false;
+          }
+        });
         if (stop) stop.addEventListener("click", async () => {
           stop.disabled = true;
           try {
@@ -4302,6 +4416,28 @@ async function handleUiRequest(
       b.createdAt - a.createdAt
     );
     return json({ jobs: allJobs });
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/jobs/clear") {
+    const body = await request.json().catch(() => null);
+    if (!body || typeof body.id !== "string") {
+      return json({ error: "Choose a job to clear." }, 400);
+    }
+    const job = jobs.get(body.id);
+    if (job) {
+      if (!["done", "failed"].includes(job.status)) {
+        return json({ error: "Wait for the job to finish before clearing it." }, 409);
+      }
+      jobs.delete(job.id);
+      return json({ ok: true });
+    }
+    try {
+      return await liveManager.clear(body.id)
+        ? json({ ok: true })
+        : json({ error: "Job not found." }, 404);
+    } catch (error) {
+      return json({ error: error instanceof Error ? error.message : String(error) }, 409);
+    }
   }
 
   if (request.method === "POST" && url.pathname === "/api/live") {

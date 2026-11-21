@@ -1,9 +1,33 @@
-# Svid v2.4.1
+# Svid v2.4.5
+
+- Added Clear Job for finished, failed and cancelled jobs. Only the list entry
+  is removed; downloaded files, recordings and recoverable parts are kept.
+- Separated live recording dates and times, with an hours/minutes picker on
+  Windows and macOS.
+
+## Included From 2.4.4
 
 Svid is a Windows app for downloading videos, cutting clips, converting media,
 and creating subtitles from a corrected text file.
 
 ## What's New
+
+- Live source checks use the operating system's HTTPS certificate validation.
+  Certificate verification remains enabled; connection errors are shown in logs
+  instead of reporting the stream as offline.
+- Diavlos metadata requests use the canonical `diavlos.grnet.gr` API host.
+- Diavlos conference recording reads the actual broadcast URL from the public
+  conference API, avoiding the introductory video and offline placeholder.
+- Offline Diavlos conferences stay on standby and retry their live source.
+
+## Download Fixes
+
+- Shortened download filenames while retaining Unicode titles and the video ID,
+  fixing Facebook downloads that failed with `File name too long`.
+- Added detection of public media URLs in Alpha's Kwik player, including the
+  news page that previously failed with `Unsupported URL`.
+
+## Previous Changes
 
 - Added `Open Folder` beside `done` for each completed job. It opens that
   job's destination, even after output settings have changed.
@@ -13,7 +37,8 @@ and creating subtitles from a corrected text file.
 - Cut, conversion, and subtitle filenames now include a date-time stamp with
   milliseconds.
 - Includes the updated macOS Apple Silicon preview ZIP. The Mac build is
-  cross-compiled, not yet verified on a physical Mac, and unsigned.
+  cross-compiled, not yet verified on a physical Mac, and ad-hoc signed without
+  Apple Developer ID signing or notarization.
 
 ## Live Recording
 

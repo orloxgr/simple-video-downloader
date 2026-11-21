@@ -187,3 +187,78 @@ Deno.test("a corrupt schedule is reported and never overwritten", async () => {
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("clearing finished jobs persists their removal and never removes media files", async () => {
+  const dir = await Deno.makeTempDir();
+  let launches = 0;
+  const options = {
+    stateDir: dir,
+    prepare: () => Promise.resolve(),
+    launch: () => { launches++; return Promise.resolve(0); },
+  };
+  const manager = new LiveManager(options);
+  try {
+    const job = await manager.create({ target }, dir);
+    await until(() => job.status === "done");
+    await manager.shutdown();
+    await Deno.mkdir(job.sessionDir, { recursive: true });
+    const media = join(job.sessionDir, "recording.ts");
+    await Deno.writeTextFile(media, "kept media marker");
+    equal(await manager.clear(job.id), true);
+    equal(manager.jobs.has(job.id), false);
+    equal(await Deno.readTextFile(media), "kept media marker");
+    deepEqual(JSON.parse(await Deno.readTextFile(join(dir, "live-jobs.json"))), []);
+    const restored = new LiveManager(options);
+    await restored.restore();
+    equal(restored.jobs.size, 0);
+    equal(launches, 1);
+    equal(await manager.clear(job.id), false);
+  } finally {
+    await manager.shutdown();
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("active and stopping jobs cannot be cleared", async () => {
+  const dir = await Deno.makeTempDir();
+  let finish!: () => void;
+  const preparing = new Promise<void>((resolve) => finish = resolve);
+  const manager = new LiveManager({
+    stateDir: dir,
+    prepare: () => preparing,
+    launch: () => Promise.resolve(0),
+  });
+  try {
+    const job = await manager.create({ target }, dir);
+    await rejects(() => manager.clear(job.id), /finish/);
+    await manager.stop(job.id);
+    await rejects(() => manager.clear(job.id), /finish/);
+    equal(manager.jobs.has(job.id), true);
+    finish();
+    await manager.shutdown();
+    equal(await manager.clear(job.id), true);
+  } finally {
+    finish();
+    await manager.shutdown();
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("failed live jobs can be cleared", async () => {
+  const dir = await Deno.makeTempDir();
+  const manager = new LiveManager({
+    stateDir: dir,
+    prepare: () => Promise.resolve(),
+    launch: () => Promise.resolve(1),
+  });
+  try {
+    const job = await manager.create({ target }, dir);
+    await until(() => job.status === "failed");
+    await manager.shutdown();
+    equal(await manager.clear(job.id), true);
+    equal(manager.jobs.size, 0);
+  } finally {
+    await manager.shutdown();
+    await Deno.remove(dir, { recursive: true });
+  }
+});
